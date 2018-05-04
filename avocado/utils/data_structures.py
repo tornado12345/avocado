@@ -24,7 +24,14 @@ avocado core code or plugins.
 
 import sys
 import math
-from itertools import izip
+
+from six.moves import zip
+
+
+class InvalidDataSize(ValueError):
+    """
+    Signals that the value given to :class:`DataSize` is not valid.
+    """
 
 
 def ordered_list_unique(object_list):
@@ -72,18 +79,18 @@ def compare_matrices(matrix1, matrix2, threshold=0.05):
     same = 0
     new_matrix = []
 
-    for line1, line2 in izip(matrix1, matrix2):
+    for line1, line2 in zip(matrix1, matrix2):
         new_line = []
-        elements = izip(line1, line2)
+        elements = zip(line1, line2)
         try:
-            element1, element2 = elements.next()
+            element1, element2 = next(elements)
         except StopIteration:             # no data in this row
             new_matrix.append(new_line)
             continue
         if element1 == element2:          # this column contains header
             new_line.append(element1)
             try:
-                element1, element2 = elements.next()
+                element1, element2 = next(elements)
             except StopIteration:
                 new_matrix.append(new_line)
                 continue
@@ -98,7 +105,7 @@ def compare_matrices(matrix1, matrix2, threshold=0.05):
                     new_line.append("error_%s/%s" % (element2, element1))
                     improvements += 1
                 try:
-                    element1, element2 = elements.next()
+                    element1, element2 = next(elements)
                 except StopIteration:
                     break
                 continue
@@ -107,12 +114,12 @@ def compare_matrices(matrix1, matrix2, threshold=0.05):
                 new_line.append(100 * ratio - 100)
             elif ratio > (1 + threshold):   # handling improvements
                 improvements += 1
-                new_line.append("+" + str(100 * ratio - 100))
+                new_line.append("+%.6g" % (100 * ratio - 100))
             else:
                 same += 1
                 new_line.append(".")
             try:
-                element1, element2 = elements.next()
+                element1, element2 = next(elements)
             except StopIteration:
                 break
         new_matrix.append(new_line)
@@ -235,10 +242,80 @@ def time_to_seconds(time):
                 seconds = int(time[:-1]) * mult
             else:
                 seconds = int(time)
-        except (ValueError, TypeError) as e:
+        except (ValueError, TypeError):
             raise ValueError("Invalid value '%s' for time. Use a string with "
                              "the number and optionally the time unit (s, m, "
                              "h or d)." % time)
     else:
         seconds = 0
     return seconds
+
+
+class DataSize(object):
+    """
+    Data Size object with builtin unit-converted attributes.
+
+    :param data: Data size plus optional unit string. i.e. '10m'. No
+                 unit string means the data size is in bytes.
+    :type data: str
+    """
+
+    __slots__ = ['_value', '_unit']
+
+    MULTIPLIERS = {'b': 1,  # 2**0
+                   'k': 1024,  # 2**10
+                   'm': 1048576,  # 2**20
+                   'g': 1073741824,  # 2**30
+                   't': 1099511627776}  # 2**40
+
+    def __init__(self, data):
+        try:
+            norm_size = data.strip().lower()
+            last = norm_size[-1]
+            if last.isdigit():
+                self._value = int(norm_size)
+                self._unit = 'b'
+            elif last in self.MULTIPLIERS:
+                self._value = int(norm_size[:-1])
+                self._unit = last
+            else:
+                raise ValueError
+
+            if self._value < 0:
+                raise ValueError
+
+        except ValueError:
+            raise InvalidDataSize('String not in size + unit format (i.e. '
+                                  '"10M", "100k", ...)')
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def unit(self):
+        return self._unit
+
+    @property
+    def b(self):
+        return self._value * self.MULTIPLIERS[self._unit]
+
+    @property
+    def k(self):
+        return int(self._value * self.MULTIPLIERS[self._unit] /
+                   self.MULTIPLIERS['k'])
+
+    @property
+    def m(self):
+        return int(self._value * self.MULTIPLIERS[self._unit] /
+                   self.MULTIPLIERS['m'])
+
+    @property
+    def g(self):
+        return int(self._value * self.MULTIPLIERS[self._unit] /
+                   self.MULTIPLIERS['g'])
+
+    @property
+    def t(self):
+        return int(self._value * self.MULTIPLIERS[self._unit] /
+                   self.MULTIPLIERS['t'])

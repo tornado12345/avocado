@@ -11,60 +11,84 @@ details you need to pay attention to.
 Bump the version number
 =======================
 
-Go through the avocado code base and update the release number. At the time
-of this writing, the diff looked like this:
+For the Avocado versioning, two files need to receive a manual version update:
+
+ * ``VERSION``
+ * ``python-avocado.spec``
+
+followed by ``make propagate-version`` to propagate this change to all
+optional and "linkabe" plugins sharing the parent dir (eg. ``avocado-vt``).
+Don't forget to commit the changes of "linked" plugins as they live in
+different repositories.
+
+An example diff (after the ``make propagate-version``) looks like this:
 
 .. code-block:: diff
 
-    diff --git a/avocado.spec b/avocado.spec
-    index eb910e8..21313ca 100644
-    --- a/avocado.spec
-    +++ b/avocado.spec
-    @@ -1,7 +1,7 @@
-     Summary: Avocado Test Framework
-     Name: avocado
-    -Version: 0.28.0
-    -Release: 2%{?dist}
-    +Version: 0.29.0
-    +Release: 0%{?dist}
+    diff --git a/VERSION b/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/VERSION
+    +++ b/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/optional_plugins/html/VERSION b/optional_plugins/html/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/optional_plugins/html/VERSION
+    +++ b/optional_plugins/html/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/optional_plugins/robot/VERSION b/optional_plugins/robot/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/optional_plugins/robot/VERSION
+    +++ b/optional_plugins/robot/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/optional_plugins/runner_docker/VERSION b/optional_plugins/runner_docker/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/optional_plugins/runner_docker/VERSION
+    +++ b/optional_plugins/runner_docker/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/optional_plugins/runner_remote/VERSION b/optional_plugins/runner_remote/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/optional_plugins/runner_remote/VERSION
+    +++ b/optional_plugins/runner_remote/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/optional_plugins/runner_vm/VERSION b/optional_plugins/runner_vm/VERSION
+    index dd0353d..aafccd8 100644
+    --- a/optional_plugins/runner_vm/VERSION
+    +++ b/optional_plugins/runner_vm/VERSION
+    @@ -1 +1 @@
+    -48.0
+    +49.0
+    diff --git a/python-avocado.spec b/python-avocado.spec
+    index 6a4b067..4b9dba8 100644
+    --- a/python-avocado.spec
+    +++ b/python-avocado.spec
+    @@ -12,7 +12,7 @@
+
+     Summary: Framework with tools and libraries for Automated Testing
+     Name: python-%{srcname}
+    -Version: 48.0
+    +Version: 49.0
+     Release: 1%{?dist}
      License: GPLv2
      Group: Development/Tools
-     URL: http://avocado-framework.github.io/
-    @@ -104,6 +104,9 @@ examples of how to write tests on your own.
+    @@ -259,6 +259,9 @@ examples of how to write tests on your own.
      %{_datadir}/avocado/wrappers
 
      %changelog
-    +* Wed Oct 7 2015 Lucas Meneghel Rodrigues <lmr@redhat.com> - 0.29.0-0
-    +- New upstream release 0.29.0
+    +* Wed Apr 12 2017 Lukas Doktor <ldoktor@redhat.com> - 49.0-0
+    +- Testing release
     +
-     * Wed Sep 16 2015 Lucas Meneghel Rodrigues <lmr@redhat.com> - 0.28.0-2
-     - Add pystache, aexpect, psutil, sphinx and yum/dnf dependencies for functional/unittests
-
-    diff --git a/avocado/core/version.py b/avocado/core/version.py
-    index c927b19..a555af5 100755
-    --- a/avocado/core/version.py
-    +++ b/avocado/core/version.py
-    @@ -18,7 +18,7 @@ __all__ = ['MAJOR', 'MINOR', 'RELEASE', 'VERSION']
-
-
-     MAJOR = 0
-    -MINOR = 28
-    +MINOR = 29
-     RELEASE = 0
-
-     VERSION = "%s.%s.%s" % (MAJOR, MINOR, RELEASE)
-    diff --git a/setup.cfg b/setup.cfg
-    index 76953b9..5cf90e9 100644
-    --- a/setup.cfg
-    +++ b/setup.cfg
-    @@ -1,6 +1,6 @@
-     [metadata]
-     name = avocado
-    -version = 0.28.0
-    +version = 0.29.0
-     summary = Avocado Test Framework
-     description-file =
-         README.rst
+     * Mon Apr  3 2017 Cleber Rosa <cleber@localhost.localdomain> - 48.0-1
+     - Updated exclude directives and files for optional plugins
 
 You can find on git such commits that will help you get oriented for other
 repos.

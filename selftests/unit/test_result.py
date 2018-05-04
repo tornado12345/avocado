@@ -1,9 +1,5 @@
-import sys
 import argparse
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core.result import Result
 
@@ -25,7 +21,7 @@ class ResultTest(unittest.TestCase):
 
     def test_result_job_without_id(self):
         args = argparse.Namespace()
-        result = Result(FakeJob(args))
+        Result(FakeJob(args))
         self.assertRaises(AttributeError, Result, FakeJobMissingUniqueId(args))
 
 

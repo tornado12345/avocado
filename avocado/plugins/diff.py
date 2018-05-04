@@ -19,7 +19,6 @@ Job Diff
 from __future__ import absolute_import
 import argparse
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -31,11 +30,9 @@ from avocado.core import exit_codes
 from avocado.core import jobdata
 from avocado.core import output
 
+from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
 from avocado.core.settings import settings
-
-
-LOG = logging.getLogger("avocado.app")
 
 
 class Diff(CLICmd):
@@ -149,12 +146,12 @@ class Diff(CLICmd):
         if 'results' in args.diff_filter:
             results1 = []
             for test in job1_data['tests']:
-                test_result = '%s: %s\n' % (str(test['url']),
+                test_result = '%s: %s\n' % (str(test['id']),
                                             str(test['status']))
                 results1.append(test_result)
             results2 = []
             for test in job2_data['tests']:
-                test_result = '%s: %s\n' % (str(test['url']),
+                test_result = '%s: %s\n' % (str(test['id']),
                                             str(test['status']))
                 results2.append(test_result)
 
@@ -204,26 +201,29 @@ class Diff(CLICmd):
         if getattr(args, 'create_reports', False):
             self.std_diff_output = False
             prefix = 'avocado_diff_%s_' % job1_id[:7]
-            tmp_file1 = tempfile.NamedTemporaryFile(prefix=prefix,
+            tmp_file1 = tempfile.NamedTemporaryFile(mode='w',
+                                                    prefix=prefix,
                                                     suffix='.txt',
                                                     delete=False)
             tmp_file1.writelines(job1_results)
             tmp_file1.close()
 
             prefix = 'avocado_diff_%s_' % job2_id[:7]
-            tmp_file2 = tempfile.NamedTemporaryFile(prefix=prefix,
+            tmp_file2 = tempfile.NamedTemporaryFile(mode='w',
+                                                    prefix=prefix,
                                                     suffix='.txt',
                                                     delete=False)
             tmp_file2.writelines(job2_results)
             tmp_file2.close()
 
-            LOG.info('%s %s', tmp_file1.name, tmp_file2.name)
+            LOG_UI.info('%s %s', tmp_file1.name, tmp_file2.name)
 
         if (getattr(args, 'open_browser', False) and
                 getattr(args, 'html', None) is None):
 
             prefix = 'avocado_diff_%s_%s_' % (job1_id[:7], job2_id[:7])
-            tmp_file = tempfile.NamedTemporaryFile(prefix=prefix,
+            tmp_file = tempfile.NamedTemporaryFile(mode='w',
+                                                   prefix=prefix,
                                                    suffix='.html',
                                                    delete=False)
 
@@ -259,10 +259,10 @@ class Diff(CLICmd):
                 with open(args.html, 'w') as html_file:
                     html_file.writelines(job_diff_html.encode("utf-8"))
 
-                LOG.info(args.html)
+                LOG_UI.info(args.html)
 
             except IOError as exception:
-                LOG.error(exception)
+                LOG_UI.error(exception)
                 sys.exit(exit_codes.AVOCADO_FAIL)
 
         if getattr(args, 'open_browser', False):
@@ -281,13 +281,13 @@ class Diff(CLICmd):
                                                      job2_results,
                                                      fromfile=job1_id,
                                                      tofile=job2_id)):
-                    LOG.debug(line.strip())
+                    LOG_UI.debug(line.strip())
             else:
                 for line in unified_diff(job1_results,
                                          job2_results,
                                          fromfile=job1_id,
                                          tofile=job2_id):
-                    LOG.debug(line.strip())
+                    LOG_UI.debug(line.strip())
 
     @staticmethod
     def _validate_filters(string):
@@ -342,18 +342,18 @@ class Diff(CLICmd):
             try:
                 resultsdir = jobdata.get_resultsdir(logdir, job_id)
             except ValueError as exception:
-                LOG.error(exception.message)
-                sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+                LOG_UI.error(exception.message)
+                sys.exit(exit_codes.AVOCADO_FAIL)
 
         if resultsdir is None:
-            LOG.error("Can't find job results directory for '%s' in '%s'",
-                      job_id, logdir)
+            LOG_UI.error("Can't find job results directory for '%s' in '%s'",
+                         job_id, logdir)
             sys.exit(exit_codes.AVOCADO_FAIL)
 
         sourcejob = jobdata.get_id(os.path.join(resultsdir, 'id'), job_id)
         if sourcejob is None:
-            LOG.error("Can't find matching job id '%s' in '%s' directory.",
-                      job_id, resultsdir)
+            LOG_UI.error("Can't find matching job id '%s' in '%s' directory.",
+                         job_id, resultsdir)
             sys.exit(exit_codes.AVOCADO_FAIL)
 
         return resultsdir, sourcejob
@@ -369,21 +369,9 @@ class Diff(CLICmd):
     @staticmethod
     def _get_variants(resultsdir):
         results = []
-        mux = jobdata.retrieve_mux(resultsdir)
-        if mux is not None:
-            env = set()
-            for (index, tpl) in enumerate(mux.variants):
-                paths = ', '.join([x.path for x in tpl])
-                results.append('Variant %s: %s\n' % (index + 1, paths))
-                for node in tpl:
-                    for key, value in node.environment.iteritems():
-                        origin = node.environment_origin[key].path
-                        env.add(("%s:%s" % (origin, key), str(value)))
-                if not env:
-                    continue
-                fmt = '    %%-%ds => %%s\n' % max([len(_[0]) for _ in env])
-                for record in sorted(env):
-                    results.append(fmt % record)
+        variants = jobdata.retrieve_variants(resultsdir)
+        if variants is not None:
+            results.extend(variants.to_str(variants=2).splitlines())
         else:
             results.append('Not found\n')
 

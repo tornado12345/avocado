@@ -23,12 +23,8 @@ import os
 import time
 import fcntl
 import socket
+import subprocess
 import tempfile
-
-try:
-    import subprocess32 as subprocess
-except ImportError:
-    import subprocess
 
 from . import network
 from .external import gdbmi_parser
@@ -225,19 +221,20 @@ def string_to_hex(text):
     return "".join(map(format_as_hex, text))
 
 
-def remote_checksum(input):
+def remote_checksum(input_message):
     """
     Calculates a remote message checksum
 
-    :param input: the message input payload, without the start and end markers
-    :type input: str
+    :param input_message: the message input payload, without the start and end
+                          markers
+    :type input_message: str
     :returns: two digit checksum
     :rtype: str
     """
-    sum = 0
-    for i in input:
-        sum += ord(i)
-    result = sum % 256
+    total = 0
+    for i in input_message:
+        total += ord(i)
+    result = total % 256
 
     hexa = "%2x" % result
     return hexa.lower()
@@ -543,7 +540,7 @@ class GDB(object):
             raise UnexpectedResponseError
         return r
 
-    def run(self, args=[]):
+    def run(self, args=None):
         """
         Runs the application inside the debugger
 
@@ -623,7 +620,7 @@ class GDBServer(object):
 
     #: The time to optionally wait for the server to initialize itself and be
     #: ready to accept new connections
-    INIT_TIMEOUT = 2.0
+    INIT_TIMEOUT = 5.0
 
     def __init__(self, path='/usr/bin/gdbserver', port=None,
                  wait_until_running=True, *extra_args):
@@ -675,10 +672,10 @@ class GDBServer(object):
             self._wait_until_running()
 
     def _wait_until_running(self):
-        init_time = time.time()
         connection_ok = False
         c = GDB()
-        while time.time() - init_time < self.INIT_TIMEOUT:
+        end_time = time.time() + self.INIT_TIMEOUT
+        while time.time() < end_time:
             try:
                 c.connect(self.port)
                 connection_ok = True
@@ -779,7 +776,7 @@ class GDBRemote(object):
             raise NotConnectedError
 
         data = remote_encode(command_data)
-        sent = self._socket.send(data)
+        self._socket.send(data)
 
         if not self.no_ack_mode:
             transmission_result = self._socket.recv(1)

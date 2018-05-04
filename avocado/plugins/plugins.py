@@ -15,9 +15,8 @@
 Plugins information plugin
 """
 
-import logging
-
 from avocado.core import dispatcher
+from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
 from avocado.utils import astring
 
@@ -39,7 +38,6 @@ class Plugins(CLICmd):
                             'Current: %(default)s')
 
     def run(self, args):
-        log = logging.getLogger("avocado.app")
         plugin_types = [
             (dispatcher.CLICmdDispatcher(),
              'Plugins that add new commands (cli.cmd):'),
@@ -51,16 +49,19 @@ class Plugins(CLICmd):
              'Plugins that generate job result in different formats (result):'),
             (dispatcher.ResultEventsDispatcher(args),
              ('Plugins that generate job result based on job/test events '
-              '(result_events):'))
+              '(result_events):')),
+            (dispatcher.VarianterDispatcher(),
+             'Plugins that generate test variants (varianter): ')
         ]
         for plugins_active, msg in plugin_types:
-            log.info(msg)
+            LOG_UI.info(msg)
             plugin_matrix = []
             for plugin in sorted(plugins_active, key=lambda x: x.name):
                 plugin_matrix.append((plugin.name, plugin.obj.description))
 
             if not plugin_matrix:
-                log.debug("(No active plugin)")
+                LOG_UI.debug("(No active plugin)")
             else:
                 for line in astring.iter_tabular_output(plugin_matrix):
-                    log.debug(line)
+                    LOG_UI.debug(line)
+                LOG_UI.debug("")

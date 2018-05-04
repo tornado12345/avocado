@@ -17,16 +17,19 @@ Base Test Runner Plugins.
 """
 
 import argparse
-import logging
 import sys
 
 from avocado.core import exit_codes
 from avocado.core import job
 from avocado.core import loader
+from avocado.core import output
+from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
 from avocado.core.dispatcher import ResultDispatcher
+from avocado.core.dispatcher import JobPrePostDispatcher
 from avocado.core.settings import settings
 from avocado.utils.data_structures import time_to_seconds
+from avocado.utils import process
 
 
 class Run(CLICmd):
@@ -63,7 +66,7 @@ class Run(CLICmd):
                             'unless you know exactly what you\'re doing')
 
         parser.add_argument('--job-results-dir', action='store',
-                            dest='logdir', default=None, metavar='DIRECTORY',
+                            dest='base_logdir', default=None, metavar='DIRECTORY',
                             help=('Forces to use of an alternate job '
                                   'results directory.'))
 
@@ -79,6 +82,14 @@ class Run(CLICmd):
                             help='Enable or disable the job interruption on '
                             'first failed test.')
 
+        parser.add_argument('--keep-tmp', choices=('on', 'off'),
+                            default='off', help='Keep job temporary files '
+                            '(useful for avocado debugging). Defaults to off.')
+
+        parser.add_argument('--ignore-missing-references', choices=('on', 'off'),
+                            help="Force the job execution, even if some of "
+                            "the test references are not resolved to tests.")
+
         sysinfo_default = settings.get_value('sysinfo.collect',
                                              'enabled',
                                              key_type='bool',
@@ -88,6 +99,12 @@ class Run(CLICmd):
                             default=sysinfo_default, help="Enable or disable "
                             "system information (hardware details, profilers, "
                             "etc.). Current:  %(default)s")
+
+        parser.add_argument("--execution-order",
+                            choices=("tests-per-variant",
+                                     "variants-per-test"),
+                            help="Defines the order of iterating through test "
+                            "suite and test variants")
 
         parser.output = parser.add_argument_group('output and result format')
 
@@ -106,17 +123,42 @@ class Run(CLICmd):
                                    help="Store given logging STREAMs in "
                                    "$JOB_RESULTS_DIR/$STREAM.$LEVEL.")
 
+        parser.output.add_argument("--log-test-data-directories",
+                                   action="store_true",
+                                   help="Logs the possible data directories "
+                                   "for each test. This is helpful when "
+                                   "writing new tests and not being sure "
+                                   "where to put data files. Look for \""
+                                   "Test data directories\" in your test log")
+
         out_check = parser.add_argument_group('output check arguments')
 
         out_check.add_argument('--output-check-record',
-                               choices=('none', 'all', 'stdout', 'stderr'),
-                               default='none',
-                               help="Record output streams of your tests "
-                               "to reference files (valid options: none (do "
-                               "not record output streams), all (record both "
-                               "stdout and stderr), stdout (record only "
-                               "stderr), stderr (record only stderr). "
-                               'Current: %(default)s')
+                               choices=('none', 'stdout', 'stderr',
+                                        'both', 'combined', 'all'),
+                               help="Record the output produced by each test "
+                                    "(from stdout and stderr) into both the "
+                                    "current executing result and into  "
+                                    "reference files.  Reference files are "
+                                    "used on subsequent runs to determine if "
+                                    "the test produced the expected output or "
+                                    "not, and the current executing result is "
+                                    "used to check against a previously "
+                                    "recorded reference file.  Valid values: "
+                                    "'none' (to explicitly disable all "
+                                    "recording) 'stdout' (to record standard "
+                                    "output *only*), 'stderr' (to record "
+                                    "standard error *only*), 'both' (to record"
+                                    " standard output and error in separate "
+                                    "files), 'combined' (for standard output "
+                                    "and error in a single file). 'all' is "
+                                    "also a valid but deprecated option that "
+                                    "is a synonym of 'both'.  This option "
+                                    "does not have a default value, but the "
+                                    "Avocado test runner will record the "
+                                    "test under execution in the most suitable"
+                                    " way unless it's explicitly disabled with"
+                                    " value 'none'")
 
         out_check.add_argument('--output-check', choices=('on', 'off'),
                                default='on',
@@ -128,17 +170,18 @@ class Run(CLICmd):
 
         loader.add_loader_options(parser)
 
-        mux = parser.add_argument_group('test parameters')
-        mux.add_argument('--filter-only', nargs='*', default=[],
-                         help='Filter only path(s) from multiplexing')
-        mux.add_argument('--filter-out', nargs='*', default=[],
-                         help='Filter out path(s) from multiplexing')
-        mux.add_argument('--mux-path', nargs='*', default=None,
-                         help="List of paths used to determine path "
-                         "priority when querying for parameters")
-        mux.add_argument('--mux-inject', default=[], nargs='*',
-                         help="Inject [path:]key:node values into the "
-                         "final multiplex tree.")
+        filtering = parser.add_argument_group('filtering parameters')
+        filtering.add_argument('-t', '--filter-by-tags', metavar='TAGS',
+                               action='append',
+                               help='Filter INSTRUMENTED tests based on '
+                               '":avocado: tags=tag1,tag2" notation in '
+                               'their class docstring')
+        filtering.add_argument('--filter-by-tags-include-empty',
+                               action='store_true', default=False,
+                               help=('Include all tests without tags during '
+                                     'filtering. This effectively means they '
+                                     'will be kept in the test suite found '
+                                     'previously to filtering.'))
 
     def run(self, args):
         """
@@ -146,22 +189,36 @@ class Run(CLICmd):
 
         :param args: Command line args received from the run subparser.
         """
-        log = logging.getLogger("avocado.app")
+        if 'output_check_record' in args:
+            process.OUTPUT_CHECK_RECORD_MODE = getattr(args,
+                                                       'output_check_record',
+                                                       None)
+
         if args.unique_job_id is not None:
             try:
                 int(args.unique_job_id, 16)
                 if len(args.unique_job_id) != 40:
                     raise ValueError
             except ValueError:
-                log.error('Unique Job ID needs to be a 40 digit hex number')
+                LOG_UI.error('Unique Job ID needs to be a 40 digit hex number')
                 sys.exit(exit_codes.AVOCADO_FAIL)
         try:
             args.job_timeout = time_to_seconds(args.job_timeout)
         except ValueError as e:
-            log.error(e.message)
+            LOG_UI.error(e.args[0])
             sys.exit(exit_codes.AVOCADO_FAIL)
-        job_instance = job.Job(args)
-        job_run = job_instance.run()
+        with job.Job(args) as job_instance:
+            pre_post_dispatcher = JobPrePostDispatcher()
+            try:
+                # Run JobPre plugins
+                output.log_plugin_failures(pre_post_dispatcher.load_failures)
+                pre_post_dispatcher.map_method('pre', job_instance)
+
+                job_run = job_instance.run()
+            finally:
+                # Run JobPost plugins
+                pre_post_dispatcher.map_method('post', job_instance)
+
         result_dispatcher = ResultDispatcher()
         if result_dispatcher.extensions:
             result_dispatcher.map_method('render',

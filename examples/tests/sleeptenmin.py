@@ -3,6 +3,8 @@
 import os
 import time
 
+from six.moves import xrange as range
+
 from avocado import main
 from avocado import Test
 
@@ -11,6 +13,8 @@ class SleepTenMin(Test):
 
     """
     Sleeps for 10 minutes
+
+    :avocado: tags=slow
 
     :param sleep_cycles: How many iterations should be executed
     :param sleep_length: single sleep duration
@@ -25,7 +29,7 @@ class SleepTenMin(Test):
         length = int(self.params.get('sleep_length', default=600))
         method = self.params.get('sleep_method', default='builtin')
 
-        for _ in xrange(0, cycles):
+        for _ in range(0, cycles):
             self.log.debug("Sleeping for %.2f seconds", length)
             if method == 'builtin':
                 time.sleep(length)

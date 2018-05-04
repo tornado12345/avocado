@@ -14,13 +14,33 @@ Contents:
    Configuration
    Loaders
    LoggingSystem
-   Mux
+   Sysinfo
+   TestParameters
    Replay
    Diff
    RunningTestsRemotely
+   SubclassingAvocado
    DebuggingWithGDB
    WrapProcess
    Plugins
+
+=========
+Utilities
+=========
+
+.. toctree::
+   :maxdepth: 2
+
+   utils/index
+
+================
+Optional Plugins
+================
+
+.. toctree::
+   :maxdepth: 2
+
+   optional_plugins/index
 
 ===============================
 Advanced Topics and Maintenance
@@ -33,6 +53,7 @@ Advanced Topics and Maintenance
    ContributionGuide
    DevelopmentTips
    MaintenanceGuide
+   OtherResources
 
 .. _api-reference:
 
@@ -47,6 +68,7 @@ API Reference
    api/utils/avocado.utils.rst
    api/core/avocado.core.rst
    api/plugins/avocado.plugins.rst
+   api/optional-plugins/index.rst
 
 =====================
 Avocado Release Notes
@@ -56,6 +78,15 @@ Avocado Release Notes
    :maxdepth: 1
 
    release_notes/index
+
+===========================
+Request For Comments (RFCs)
+===========================
+
+.. toctree::
+   :maxdepth: 1
+
+   rfcs/index
 
 Indices and tables
 ==================

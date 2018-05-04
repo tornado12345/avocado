@@ -16,16 +16,14 @@ import gzip
 import json
 import logging
 import os
+import shlex
 import shutil
+import subprocess
 import time
-
-try:
-    import subprocess32 as subprocess
-except ImportError:
-    import subprocess
 
 from . import output
 from .settings import settings
+from ..utils import astring
 from ..utils import genio
 from ..utils import process
 from ..utils import software_manager
@@ -41,7 +39,7 @@ class Collectible(object):
     """
 
     def __init__(self, logf):
-        self.logf = logf
+        self.logf = astring.string_to_safe_path(logf)
 
     def readline(self, logdir):
         """
@@ -114,12 +112,12 @@ class Command(Collectible):
 
     :param cmd: String with the command.
     :param logf: Basename of the file where output is logged (optional).
-    :param compress_logf: Wether to compress the output of the command.
+    :param compress_logf: Whether to compress the output of the command.
     """
 
     def __init__(self, cmd, logf=None, compress_log=False):
         if not logf:
-            logf = cmd.replace(" ", "_")
+            logf = cmd
         super(Command, self).__init__(logf)
         self.cmd = cmd
         self._compress_log = compress_log
@@ -157,19 +155,26 @@ class Command(Collectible):
         locale = settings.get_value("sysinfo.collect", "locale", str, None)
         if locale:
             env["LC_ALL"] = locale
+        timeout = settings.get_value("sysinfo.collect", "commands_timeout",
+                                     int, -1)
+        # the sysinfo configuration supports negative or zero integer values
+        # but the avocado.utils.process APIs define no timeouts as "None"
+        if int(timeout) <= 0:
+            timeout = None
+        result = process.run(self.cmd,
+                             timeout=timeout,
+                             verbose=False,
+                             ignore_status=True,
+                             allow_output_check='combined',
+                             shell=True,
+                             env=env)
         logf_path = os.path.join(logdir, self.logf)
-        stdin = open(os.devnull, "r")
-        stdout = open(logf_path, "w")
-        try:
-            subprocess.call(self.cmd, stdin=stdin, stdout=stdout,
-                            stderr=subprocess.STDOUT, shell=True, env=env)
-        finally:
-            for f in (stdin, stdout):
-                f.close()
-            if self._compress_log and os.path.exists(logf_path):
-                process.run('gzip -9 "%s"' % logf_path,
-                            ignore_status=True,
-                            verbose=False)
+        if self._compress_log:
+            with gzip.GzipFile(logf_path, 'wb') as logf:
+                logf.write(result.stdout)
+        else:
+            with open(logf_path, 'wb') as logf:
+                logf.write(result.stdout)
 
 
 class Daemon(Command):
@@ -179,7 +184,7 @@ class Daemon(Command):
 
     :param cmd: String with the daemon command.
     :param logf: Basename of the file where output is logged (optional).
-    :param compress_logf: Wether to compress the output of the command.
+    :param compress_logf: Whether to compress the output of the command.
     """
 
     def run(self, logdir):
@@ -197,8 +202,8 @@ class Daemon(Command):
         logf_path = os.path.join(logdir, self.logf)
         stdin = open(os.devnull, "r")
         stdout = open(logf_path, "w")
-        self.pipe = subprocess.Popen(self.cmd, stdin=stdin, stdout=stdout,
-                                     stderr=subprocess.STDOUT, shell=True, env=env)
+        self.pipe = subprocess.Popen(shlex.split(self.cmd), stdin=stdin, stdout=stdout,
+                                     stderr=subprocess.STDOUT, shell=False, env=env)
 
     def stop(self):
         """
@@ -206,7 +211,7 @@ class Daemon(Command):
         """
         retcode = self.pipe.poll()
         if retcode is None:
-            self.pipe.terminate()
+            process.kill_process_tree(self.pipe.pid)
             retcode = self.pipe.wait()
         else:
             log.error("Daemon process '%s' (pid %d) terminated abnormally (code %d)",
@@ -244,10 +249,10 @@ class JournalctlWatcher(Collectible):
                 cmd = 'journalctl --quiet --after-cursor %s' % self.cursor
                 log_diff = process.system_output(cmd, verbose=False)
                 dstpath = os.path.join(logdir, self.logf)
-                with gzip.GzipFile(dstpath, "w")as out_journalctl:
+                with gzip.GzipFile(dstpath, "w") as out_journalctl:
                     out_journalctl.write(log_diff)
             except IOError:
-                log.debug("Not logging journalctl (lack of permissions)",
+                log.debug("Not logging journalctl (lack of permissions): %s",
                           dstpath)
             except Exception as e:
                 log.debug("Journalctl collection failed: %s", e)
@@ -322,19 +327,15 @@ class LogWatcher(Collectible):
             self.inode = current_inode
             self.size = current_size
 
-            in_messages = open(self.path)
-            out_messages = gzip.GzipFile(dstpath, "w")
-            try:
-                in_messages.seek(bytes_to_skip)
-                while True:
-                    # Read data in manageable chunks rather than all at once.
-                    in_data = in_messages.read(200000)
-                    if not in_data:
-                        break
-                    out_messages.write(in_data)
-            finally:
-                out_messages.close()
-                in_messages.close()
+            with open(self.path, "rb") as in_messages:
+                with gzip.GzipFile(dstpath, "wb") as out_messages:
+                    in_messages.seek(bytes_to_skip)
+                    while True:
+                        # Read data in manageable chunks rather than all at once.
+                        in_data = in_messages.read(200000)
+                        if not in_data:
+                            break
+                        out_messages.write(in_data)
         except ValueError as e:
             log.info(e)
         except (IOError, OSError):
@@ -363,7 +364,7 @@ class SysInfo(object):
                              logging packages is a costly operation). If not
                              given explicitly, tries to look in the config
                              files, and if not found, defaults to False.
-        :param profiler: Wether to use the profiler. If not given explicitly,
+        :param profiler: Whether to use the profiler. If not given explicitly,
                          tries to look in the config files.
         """
         if basedir is None:
@@ -457,17 +458,27 @@ class SysInfo(object):
                          logpaths)
 
     def _set_collectibles(self):
+        add_per_test = settings.get_value("sysinfo.collect", "per_test",
+                                          bool, None)
         if self.profiler:
             for cmd in self.profilers:
                 self.start_job_collectibles.add(Daemon(cmd))
+                if add_per_test:
+                    self.start_test_collectibles.add(Daemon(cmd))
 
         for cmd in self.commands:
             self.start_job_collectibles.add(Command(cmd))
             self.end_job_collectibles.add(Command(cmd))
+            if add_per_test:
+                self.start_test_collectibles.add(Command(cmd))
+                self.end_test_collectibles.add(Command(cmd))
 
         for filename in self.files:
             self.start_job_collectibles.add(Logfile(filename))
             self.end_job_collectibles.add(Logfile(filename))
+            if add_per_test:
+                self.start_test_collectibles.add(Logfile(filename))
+                self.end_test_collectibles.add(Logfile(filename))
 
         # As the system log path is not standardized between distros,
         # we have to probe and find out the correct path.
@@ -574,7 +585,10 @@ class SysInfo(object):
         Logging hook called before a test starts.
         """
         for log in self.start_test_collectibles:
-            log.run(self.pre_dir)
+            if isinstance(log, Daemon):  # log daemons in profile directory
+                log.run(self.profile_dir)
+            else:
+                log.run(self.pre_dir)
 
         if self.log_packages:
             self._log_installed_packages(self.pre_dir)
@@ -585,6 +599,10 @@ class SysInfo(object):
         """
         for log in self.end_test_collectibles:
             log.run(self.post_dir)
+        # Stop daemon(s) started previously
+        for log in self.start_test_collectibles:
+            if isinstance(log, Daemon):
+                log.stop()
 
         if self.log_packages:
             self._log_modified_packages(self.post_dir)

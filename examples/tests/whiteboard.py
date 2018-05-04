@@ -2,6 +2,8 @@
 
 import base64
 
+from six.moves import xrange as range
+
 from avocado import Test
 from avocado import main
 
@@ -23,9 +25,9 @@ class WhiteBoard(Test):
         if data_file:
             self.log.info('Writing data to whiteboard from file: %s',
                           data_file)
-            whiteboard_file = open(data_file, 'r')
-            size = int(data_size)
-            data = whiteboard_file.read(size)
+            with open(data_file, 'r') as whiteboard_file:
+                size = int(data_size)
+                data = whiteboard_file.read(size)
         else:
             offset = int(data_size) - 1
             data = self.params.get('whiteboard_data_text',
@@ -34,9 +36,9 @@ class WhiteBoard(Test):
         iterations = int(self.params.get('whiteboard_writes', default=1))
 
         result = ''
-        for _ in xrange(0, iterations):
+        for _ in range(0, iterations):
             result += data
-        self.whiteboard = base64.encodestring(result)
+        self.whiteboard = base64.encodestring(result.encode()).decode('ascii')
 
 
 if __name__ == "__main__":

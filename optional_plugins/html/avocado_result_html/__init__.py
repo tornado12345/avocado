@@ -27,6 +27,7 @@ import pkg_resources
 import pystache
 
 from avocado.core import exit_codes
+from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLI, Result
 
 
@@ -77,11 +78,15 @@ class ReportModel(object):
     def passed(self):
         return self.result.passed
 
-    def pass_rate(self):
-        total = float(self.result.tests_total)
-        passed = float(self.result.passed)
+    def warned(self):
+        return self.result.warned
+
+    def rate(self):
+        total = float(self.result.tests_total - self.result.skipped -
+                      self.result.cancelled)
+        succeeded = float(self.result.passed + self.result.warned)
         if total > 0:
-            pr = 100 * (passed / total)
+            pr = 100 * (succeeded / total)
         else:
             pr = 0
         return "%.2f" % pr
@@ -113,12 +118,28 @@ class ReportModel(object):
                    "ALERT": "danger",
                    "RUNNING": "info",
                    "NOSTATUS": "info",
-                   "INTERRUPTED": "danger"}
+                   "INTERRUPTED": "danger",
+                   "CANCEL": "warning"}
         test_info = []
         results_dir = self.results_dir(False)
         for tst in self.result.tests:
             formatted = {}
-            formatted['name'] = tst['name']
+            formatted['uid'] = tst['name'].uid
+            formatted['name'] = tst['name'].name
+            if 'params' in tst:
+                params = ''
+                try:
+                    parameters = 'Params:\n'
+                    for path, key, value in tst['params']:
+                        parameters += '  %s:%s => %s\n' % (path, key, value)
+                except KeyError:
+                    pass
+                else:
+                    params = parameters
+            else:
+                params = "No params"
+            formatted['params'] = params
+            formatted['variant'] = tst['name'].variant or ''
             formatted['status'] = tst['status']
             logdir = os.path.join(results_dir, 'test-results', tst['logdir'])
             formatted['logdir'] = os.path.relpath(logdir, self.html_output_dir)
@@ -142,8 +163,8 @@ class ReportModel(object):
                                'data-placement="top" '
                                'title="Error Details" '
                                'data-content="%s">%s...</a>' %
-                               ('fail_reason',
-                                'fail_reason'[:exhibition_limit]))
+                               (fail_reason,
+                                fail_reason[:exhibition_limit]))
             formatted['fail_reason'] = fail_reason
             test_info.append(formatted)
         return test_info
@@ -165,7 +186,7 @@ class ReportModel(object):
         for s_f in sysinfo_files:
             sysinfo_dict = {}
             sysinfo_path = os.path.join(base_path, s_f)
-            sysinfo_dict['file'] = " ".join(s_f.split("_"))
+            sysinfo_dict['file'] = s_f
             sysinfo_dict['element_id'] = '%s_heading_%s' % (phase, s_id)
             sysinfo_dict['collapse_id'] = '%s_collapse_%s' % (phase, s_id)
             try:
@@ -201,26 +222,6 @@ class HTMLResult(Result):
     description = 'HTML result support'
 
     @staticmethod
-    def _copy_static_resources(html_path):
-        module = 'avocado_result_html'
-        base_path = 'resources/static'
-
-        for top_dir in pkg_resources.resource_listdir(module, base_path):
-            rsrc_dir = base_path + '/%s' % top_dir
-            if pkg_resources.resource_isdir(module, rsrc_dir):
-                rsrc_files = pkg_resources.resource_listdir(module, rsrc_dir)
-                for rsrc_file in rsrc_files:
-                    source = pkg_resources.resource_filename(
-                        module,
-                        rsrc_dir + '/%s' % rsrc_file)
-                    dest = os.path.join(
-                        os.path.dirname(os.path.abspath(html_path)),
-                        top_dir,
-                        os.path.basename(source))
-                    pkg_resources.ensure_directory(dest)
-                    shutil.copy(source, dest)
-
-    @staticmethod
     def _open_browser(html_path):
         # if possible, put browser in separate process
         # group, so keyboard interrupts don't affect
@@ -228,7 +229,7 @@ class HTMLResult(Result):
         setsid = getattr(os, 'setsid', None)
         if not setsid:
             setsid = getattr(os, 'setpgrp', None)
-        inout = file(os.devnull, "r+")
+        inout = open(os.devnull, "r+")
         cmd = ['xdg-open', html_path]
         subprocess.Popen(cmd, close_fds=True, stdin=inout,
                          stdout=inout, stderr=inout,
@@ -251,18 +252,16 @@ class HTMLResult(Result):
                 report_contents = v.render('utf8')
         except UnicodeDecodeError as details:
             # FIXME: Remove me when UnicodeDecodeError problem is fixed
-            import logging
-            ui = logging.getLogger("avocado.app")
-            ui.critical("\n" + ("-" * 80))
-            ui.critical("HTML failed to render the template: %s\n\n",
-                        template)
-            ui.critical("-" * 80)
-            ui.critical("%s:\n\n", details)
-            ui.critical("%r", getattr(details, "object", "object not found"))
-            ui.critical("-" * 80)
+            LOG_UI.critical("\n" + ("-" * 80))
+            LOG_UI.critical("HTML failed to render the template: %s\n\n",
+                            template)
+            LOG_UI.critical("-" * 80)
+            LOG_UI.critical("%s:\n\n", details)
+            LOG_UI.critical("%r", getattr(details, "object",
+                                          "object not found"))
+            LOG_UI.critical("-" * 80)
             raise
 
-        self._copy_static_resources(output_path)
         with codecs.open(output_path, 'w', 'utf-8') as report_file:
             report_file.write(report_contents)
 
@@ -275,23 +274,16 @@ class HTMLResult(Result):
 
         open_browser = getattr(job.args, 'open_browser', False)
         if getattr(job.args, 'html_job_result', 'off') == 'on':
-            html_dir = os.path.join(job.logdir, 'html')
-            if os.path.exists(html_dir):    # update the html result if exists
-                shutil.rmtree(html_dir)
-            os.makedirs(html_dir)
-            html_path = os.path.join(html_dir, 'results.html')
+            html_path = os.path.join(job.logdir, 'results.html')
             self._render(result, html_path)
             if getattr(job.args, 'stdout_claimed_by', None) is None:
-                log = logging.getLogger("avocado.app")
-                log.info("JOB HTML   : %s", html_path)
+                LOG_UI.info("JOB HTML   : %s", html_path)
             if open_browser:
                 self._open_browser(html_path)
                 open_browser = False
 
         html_path = getattr(job.args, 'html_output', 'None')
         if html_path is not None:
-            if os.path.exists(html_dir):    # update the html result if exists
-                shutil.rmtree(html_dir)
             self._render(result, html_path)
             if open_browser:
                 self._open_browser(html_path)
@@ -337,7 +329,6 @@ class HTML(CLI):
 
     def run(self, args):
         if 'html_output' in args and args.html_output == '-':
-            log = logging.getLogger("avocado.app")
-            log.error('HTML to stdout not supported (not all HTML resources '
-                      'can be embedded on a single file)')
+            LOG_UI.error('HTML to stdout not supported (not all HTML resources'
+                         ' can be embedded on a single file)')
             sys.exit(exit_codes.AVOCADO_JOB_FAIL)

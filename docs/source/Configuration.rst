@@ -14,9 +14,9 @@ that contain a number of `keys` and `values`. Take for example a basic Avocado c
 .. code-block:: ini
 
     [datadir.paths]
-    base_dir = ~/avocado
-    test_dir = /$HOME/Code/avocado/examples/tests
-    data_dir = /usr/share/avocado/data
+    base_dir = /var/lib/avocado
+    test_dir = /usr/share/avocado/tests
+    data_dir = /var/lib/avocado/data
     logs_dir = ~/avocado/job-results
 
 The ``datadir.paths`` section contains a number of keys, all of them related to directories used by
@@ -75,6 +75,8 @@ So the file parsing order is:
 In this order, meaning that what you set on your local config file may override what's defined in the system wide files.
 
 .. note::  Please note that if avocado is running from git repos, those files will be ignored in favor of in tree configuration files. This is something that would normally only affect people developing avocado, and if you are in doubt, ``avocado config`` will tell you exactly which files are being used in any given situation.
+.. note::  When avocado runs inside virtualenv than path for global config files is also changed. For example, `avocado.conf` comes from the virual-env path `venv/etc/avocado/avocado.conf`.
+
 
 Order of precedence for values used in tests
 ============================================
@@ -86,10 +88,10 @@ example), we established the following order of precedence for variables (from l
 * global config file
 * local (user) config file
 * command line switch
-* multiplexer
+* test parameters
 
-So the least important value comes from the library or test code default, going all the way up to the multiplexing
-system.
+So the least important value comes from the library or test code default,
+going all the way up to the test parameters system.
 
 Config plugin
 =============
@@ -103,9 +105,9 @@ configuration, after all the files are parsed in their correct resolution order.
         $HOME/.config/avocado/avocado.conf
 
         Section.Key     Value
-        runner.base_dir /usr/share/avocado
-        runner.test_dir $HOME/Code/avocado/examples/tests
-        runner.data_dir /usr/share/avocado/data
+        runner.base_dir /var/lib/avocado
+        runner.test_dir /usr/share/avocado/tests
+        runner.data_dir /var/lib/avocado/data
         runner.logs_dir ~/avocado/job-results
 
 The command also shows the order in which your config files were parsed, giving you a better understanding of
@@ -122,7 +124,7 @@ When running tests, we are frequently looking to:
   images
 
 Avocado has a module dedicated to find those paths, to avoid cumbersome
-path manipulation magic that people had to do in previous test frameworks [1].
+path manipulation magic that people had to do in previous test frameworks [#f1]_.
 
 If you want to list all relevant directories for your test, you can use
 `avocado config --datadir` command to list those directories. Executing
@@ -149,7 +151,7 @@ provided, it will fall back to (we hope) reasonable defaults, and we
 notify the user about that in the output of the command.
 
 The relevant API documentation and meaning of each of those data directories
-is in :mod:`avocado.data_dir`, so it's highly recommended you take a look.
+is in :mod:`avocado.core.data_dir`, so it's highly recommended you take a look.
 
 You may set your preferred data dirs by setting them in the Avocado config files.
 The only exception for important data dirs here is the Avocado tmp dir, used to
@@ -161,4 +163,4 @@ since that is customary among unix programs.
 The next section of the documentation explains how you can see and set config
 values that modify the behavior for the Avocado utilities and plugins.
 
-[1] For example, autotest.
+.. [#f1] For example, autotest.

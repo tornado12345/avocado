@@ -2,7 +2,10 @@ import unittest
 import tempfile
 import os
 import shutil
+import sys
 import random
+
+from six.moves import xrange as range
 
 from avocado.utils import archive
 from avocado.utils import crypto
@@ -19,14 +22,15 @@ class ArchiveTest(unittest.TestCase):
 
     def compress_and_check_dir(self, extension):
         hash_map_1 = {}
-        for i in xrange(self.sys_random.randint(10, 20)):
+        for i in range(self.sys_random.randint(10, 20)):
             if i % 2 == 0:
                 compressdir = tempfile.mkdtemp(dir=self.compressdir)
             else:
                 compressdir = self.compressdir
             str_length = self.sys_random.randint(30, 50)
             fd, filename = tempfile.mkstemp(dir=compressdir, text=True)
-            os.write(fd, data_factory.generate_random_string(str_length))
+            with os.fdopen(fd, 'w') as f:
+                f.write(data_factory.generate_random_string(str_length))
             relative_path = filename.replace(self.compressdir, '')
             hash_map_1[relative_path] = crypto.hash_file(filename)
 
@@ -46,7 +50,8 @@ class ArchiveTest(unittest.TestCase):
     def compress_and_check_file(self, extension):
         str_length = self.sys_random.randint(30, 50)
         fd, filename = tempfile.mkstemp(dir=self.basedir, text=True)
-        os.write(fd, data_factory.generate_random_string(str_length))
+        with os.fdopen(fd, 'w') as f:
+            f.write(data_factory.generate_random_string(str_length))
         original_hash = crypto.hash_file(filename)
         dstfile = filename + extension
         archive_filename = os.path.join(self.basedir, dstfile)
@@ -93,6 +98,8 @@ class ArchiveTest(unittest.TestCase):
     def test_tbz2_2_file(self):
         self.compress_and_check_file('.tbz2')
 
+    @unittest.skipIf(sys.platform.startswith('darwin'),
+                     'macOS does not support archive extra attributes')
     def test_zip_extra_attrs(self):
         """
         Check that utils.archive reflects extra attrs of file like symlinks

@@ -22,7 +22,6 @@ import tempfile
 
 from . import aurl
 
-PY_EXTENSIONS = ['.py']
 SHEBANG = '#!'
 
 
@@ -112,9 +111,8 @@ class PathInspector(object):
     def get_first_line(self):
         first_line = ""
         if os.path.isfile(self.path):
-            checked_file = open(self.path, "r")
-            first_line = checked_file.readline()
-            checked_file.close()
+            with open(self.path, 'r') as open_file:
+                first_line = open_file.readline()
         return first_line
 
     def has_exec_permission(self):
@@ -136,10 +134,8 @@ class PathInspector(object):
         return False
 
     def is_python(self):
-        for extension in PY_EXTENSIONS:
-            if self.path.endswith(extension):
-                return True
-
+        if self.path.endswith('.py'):
+            return True
         return self.is_script(language='python')
 
 

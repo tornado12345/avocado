@@ -1,4 +1,3 @@
-#! /usr/bin/env python
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 2 of the License, or
@@ -56,6 +55,10 @@ class TestUnpickableObject(unittest.TestCase):
     Basic selftests for `avocado.utils.stacktrace.str_unpickable_object
     """
 
+    def test_raises(self):
+        self.assertRaises(ValueError, stacktrace.str_unpickable_object,
+                          ([{"foo": set([])}]))
+
     def test_basic(self):
         """ Basic usage """
         def check(exps, obj):
@@ -64,8 +67,6 @@ class TestUnpickableObject(unittest.TestCase):
             for exp in exps:
                 if not re.search(exp, act):
                     self.fail("%r no match in:\n%s" % (exp, act))
-        self.assertRaises(ValueError, stacktrace.str_unpickable_object,
-                          ([{"foo": set([])}]))
         check(["this => .*Unpickable"], Unpickable())
         check([r"this\[0\]\[0\]\[foo\]\.troublemaker => .*Unpickable"],
               [[{"foo": InClassUnpickable()}]])

@@ -1,22 +1,20 @@
 import glob
 import os
-import sys
 import tempfile
 import shutil
 import xml.dom.minidom
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core import exit_codes
+from avocado.utils import genio
 from avocado.utils import process
 from avocado.utils import script
 
 
 basedir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 basedir = os.path.abspath(basedir)
+
+AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
 
 
 SCRIPT_CONTENT = """#!/bin/bash
@@ -29,7 +27,7 @@ from avocado import Test
 
 class Dummy(Test):
     def test00sleep(self):
-        time.sleep(2)
+        time.sleep(10)
     def test01pass(self):
         pass
     def test02pass(self):
@@ -101,8 +99,8 @@ class JobTimeOutTest(unittest.TestCase):
 
     def _check_timeout_msg(self, idx):
         res_dir = os.path.join(self.tmpdir, "latest", "test-results")
-        debug_log = glob.glob(os.path.join(res_dir, "%s-*" % idx, "debug.log"))
-        debug_log = open(debug_log[0]).read()
+        debug_log_paths = glob.glob(os.path.join(res_dir, "%s-*" % idx, "debug.log"))
+        debug_log = genio.read_file(debug_log_paths[0])
         self.assertIn("Runner error occurred: Timeout reached", debug_log,
                       "Runner error occurred: Timeout reached message not "
                       "in the %sst test's debug.log:\n%s"
@@ -112,54 +110,60 @@ class JobTimeOutTest(unittest.TestCase):
                       % (idx, debug_log))
 
     def test_sleep_longer_timeout(self):
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
                     '--xunit - --job-timeout=5 %s examples/tests/passtest.py' %
-                    (self.tmpdir, self.script.path))
+                    (AVOCADO, self.tmpdir, self.script.path))
         self.run_and_check(cmd_line, 0, 2, 0, 0, 0)
 
     def test_sleep_short_timeout(self):
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
                     '--xunit - --job-timeout=1 %s examples/tests/passtest.py' %
-                    (self.tmpdir, self.script.path))
+                    (AVOCADO, self.tmpdir, self.script.path))
         self.run_and_check(cmd_line, exit_codes.AVOCADO_JOB_INTERRUPTED,
                            2, 1, 0, 1)
         self._check_timeout_msg(1)
 
     def test_sleep_short_timeout_with_test_methods(self):
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
                     '--xunit - --job-timeout=1 %s' %
-                    (self.tmpdir, self.py.path))
+                    (AVOCADO, self.tmpdir, self.py.path))
         self.run_and_check(cmd_line, exit_codes.AVOCADO_JOB_INTERRUPTED,
                            3, 1, 0, 2)
         self._check_timeout_msg(1)
 
     def test_invalid_values(self):
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=1,5 examples/tests/passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=1,5 examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_FAIL)
-        self.assertIn('Invalid value', result.stderr)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=123x examples/tests/passtest.py' % self.tmpdir)
+        self.assertIn(b'Invalid value', result.stderr)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=123x examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_FAIL)
-        self.assertIn('Invalid value', result.stderr)
+        self.assertIn(b'Invalid value', result.stderr)
 
     def test_valid_values(self):
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=123 examples/tests/passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=123 examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=123s examples/tests/passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=123s examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=123m examples/tests/passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=123m examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    '--job-timeout=123h examples/tests/passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+                    '--job-timeout=123h examples/tests/passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
 

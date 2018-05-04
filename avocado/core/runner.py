@@ -17,9 +17,8 @@
 Test runner module.
 """
 
-import logging
 import multiprocessing
-from multiprocessing import queues
+import multiprocessing.queues
 import os
 import signal
 import sys
@@ -29,6 +28,7 @@ from . import test
 from . import exceptions
 from . import output
 from . import status
+from . import varianter
 from .loader import loader
 from .status import mapping
 from ..utils import wait
@@ -36,8 +36,15 @@ from ..utils import runtime
 from ..utils import process
 from ..utils import stacktrace
 
-TEST_LOG = logging.getLogger("avocado.test")
-APP_LOG = logging.getLogger("avocado.app")
+from .output import LOG_UI as APP_LOG
+from .output import LOG_JOB as TEST_LOG
+
+#: when test was interrupted (ctrl+c/timeout)
+TIMEOUT_TEST_INTERRUPTED = 1
+#: when the process died but the status was not yet delivered
+TIMEOUT_PROCESS_DIED = 10
+#: when test reported status but the process did not finish
+TIMEOUT_PROCESS_ALIVE = 60
 
 
 def add_runner_failure(test_state, new_status, message):
@@ -59,7 +66,8 @@ def add_runner_failure(test_state, new_status, message):
     else:
         test_state["text_output"] = message + "\n"
     if test_log:
-        open(test_log, "a").write('\n' + message + '\n')
+        with open(test_log, "a") as log_file:
+            log_file.write('\n' + message + '\n')
     # Update the results
     if test_state.get("fail_reason"):
         test_state["fail_reason"] = "%s\n%s" % (test_state["fail_reason"],
@@ -150,10 +158,12 @@ class TestStatus(object):
                     raise exceptions.TestError("Process died before it pushed "
                                                "early test_status.")
             if time.time() > end and not self.early_status:
+                os.kill(proc.pid, signal.SIGTERM)
+                if not wait.wait_for(lambda: not proc.is_alive(), 1, 0, 0.01):
+                    os.kill(proc.pid, signal.SIGKILL)
                 msg = ("Unable to receive test's early-status in %ss, "
                        "something wrong happened probably in the "
                        "avocado framework." % timeout)
-                os.kill(proc.pid, signal.SIGKILL)
                 raise exceptions.TestError(msg)
             time.sleep(step)
 
@@ -175,13 +185,11 @@ class TestStatus(object):
                 self.interrupt = True
             elif "paused" in msg:
                 self.status = msg
-                self.job.result_proxy.notify_progress(False)
                 self.job._result_events_dispatcher.map_method('test_progress',
                                                               False)
-                if msg['paused']:
-                    reason = msg['paused_msg']
-                    if reason:
-                        self.job.log.warning(reason)
+                paused_msg = msg['paused']
+                if paused_msg:
+                    self.job.log.warning(paused_msg)
             else:       # test_status
                 self.status = msg
 
@@ -194,32 +202,38 @@ class TestStatus(object):
                                       " see overall job.log for details.")
         return test_state
 
-    def finish(self, proc, started, timeout, step):
+    def finish(self, proc, started, step, deadline, result_dispatcher):
         """
         Wait for the test process to finish and report status or error status
         if unable to obtain the status till deadline.
 
         :param proc: The test's process
         :param started: Time when the test started
-        :param timeout: Timeout for waiting on status
         :param first: Delay before first check
         :param step: Step between checks for the status
+        :param deadline: Test execution deadline
+        :param result_dispatcher: Result dispatcher (for test_progress
+               notifications)
         """
         # Wait for either process termination or test status
-        wait.wait_for(lambda: not proc.is_alive() or self.status, timeout, 0,
+        wait.wait_for(lambda: not proc.is_alive() or self.status, 1, 0,
                       step)
         if self.status:     # status exists, wait for process to finish
-            if not wait.wait_for(lambda: not proc.is_alive(), timeout, 0,
+            deadline = min(deadline, time.time() + TIMEOUT_PROCESS_ALIVE)
+            while time.time() < deadline:
+                result_dispatcher.map_method('test_progress', False)
+                if wait.wait_for(lambda: not proc.is_alive(), 1, 0,
                                  step):
-                err = "Test reported status but did not finish"
-            else:   # Test finished and reported status, pass
-                return self._add_status_failures(self.status)
+                    return self._add_status_failures(self.status)
+            err = "Test reported status but did not finish"
         else:   # proc finished, wait for late status delivery
-            if not wait.wait_for(lambda: self.status, timeout, 0, step):
-                err = "Test died without reporting the status."
-            else:
-                # Status delivered after the test process finished, pass
-                return self._add_status_failures(self.status)
+            deadline = min(deadline, time.time() + TIMEOUT_PROCESS_DIED)
+            while time.time() < deadline:
+                result_dispatcher.map_method('test_progress', False)
+                if wait.wait_for(lambda: self.status, 1, 0, step):
+                    # Status delivered after the test process finished, pass
+                    return self._add_status_failures(self.status)
+            err = "Test died without reporting the status."
         # At this point there were failures, fill the new test status
         TEST_LOG.debug("Original status: %s", str(self.status))
         test_state = self.early_status
@@ -234,19 +248,21 @@ class TestStatus(object):
                 test_state['text_output'] = log_file_obj.read()
         except IOError:
             test_state["text_output"] = "Not available, file not created yet"
-        TEST_LOG.error('ERROR %s -> TestAbortedError: '
-                       'Test process died without reporting the status.',
+        TEST_LOG.error('ERROR %s -> TestAbortedError: %s.', err,
                        test_state['name'])
         if proc.is_alive():
             TEST_LOG.warning("Killing hanged test process %s" % proc.pid)
-            for _ in xrange(5):     # I really want to destroy it
+            os.kill(proc.pid, signal.SIGTERM)
+            if not wait.wait_for(lambda: not proc.is_alive(), 1, 0, 0.01):
                 os.kill(proc.pid, signal.SIGKILL)
-                if not proc.is_alive():
-                    break
-                time.sleep(0.1)
-            else:
-                raise exceptions.TestError("Unable to destroy test's process "
-                                           "(%s)" % proc.pid)
+                end_time = time.time() + 60
+                while time.time() < end_time:
+                    if not proc.is_alive():
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise exceptions.TestError("Unable to destroy test's "
+                                               "process (%s)" % proc.pid)
         return self._add_status_failures(test_state)
 
 
@@ -256,6 +272,10 @@ class TestRunner(object):
     A test runner class that displays tests results.
     """
     DEFAULT_TIMEOUT = 86400
+
+    #: Mode in which this runner should iterate through tests and variants.
+    #: The allowed values are "variants-per-test" or "tests-per-variant"
+    DEFAULT_EXECUTION_ORDER = "variants-per-test"
 
     def __init__(self, job, result):
         """
@@ -282,28 +302,27 @@ class TestRunner(object):
         :param queue: Multiprocess queue.
         :type queue: :class:`multiprocessing.Queue` instance.
         """
-        signal.signal(signal.SIGTSTP, signal.SIG_IGN)
-        logger_list_stdout = [logging.getLogger('avocado.test.stdout'),
-                              TEST_LOG,
-                              logging.getLogger('paramiko')]
-        logger_list_stderr = [logging.getLogger('avocado.test.stderr'),
-                              TEST_LOG,
-                              logging.getLogger('paramiko')]
-        sys.stdout = output.LoggingFile(logger=logger_list_stdout)
-        sys.stderr = output.LoggingFile(logger=logger_list_stderr)
+        sys.stdout = output.LoggingFile(["[stdout] "], loggers=[TEST_LOG])
+        sys.stderr = output.LoggingFile(["[stderr] "], loggers=[TEST_LOG])
 
         def sigterm_handler(signum, frame):     # pylint: disable=W0613
             """ Produce traceback on SIGTERM """
-            raise SystemExit("Test interrupted by SIGTERM")
+            raise RuntimeError("Test interrupted by SIGTERM")
 
         signal.signal(signal.SIGTERM, sigterm_handler)
 
-        # Replace STDIN (0) with the /dev/null's fd
+        # At this point, the original `sys.stdin` has already been
+        # closed and replaced with `os.devnull` by
+        # `multiprocessing.Process()` (not directly from Avocado
+        # code).  Still, tests trying to use file descriptor 0 would
+        # be able to read from the tty, and would hang. Let's replace
+        # STDIN fd (0), with the same fd previously set by
+        # `multiprocessing.Process()`
         os.dup2(sys.stdin.fileno(), 0)
 
         instance = loader.load_test(test_factory)
         if instance.runner_queue is None:
-            instance.runner_queue = queue
+            instance.set_runner_queue(queue)
         runtime.CURRENT_TEST = instance
         early_state = instance.get_state()
         early_state['early_status'] = True
@@ -316,6 +335,18 @@ class TestRunner(object):
         self.job._result_events_dispatcher.map_method('start_test',
                                                       self.result,
                                                       early_state)
+        if getattr(self.job.args, 'log_test_data_directories', False):
+            data_sources = getattr(instance, "DATA_SOURCES", [])
+            if data_sources:
+                locations = []
+                for source in data_sources:
+                    locations.append(instance.get_data("", source=source,
+                                                       must_exist=False))
+                TEST_LOG.info('Test data directories: ')
+                for source, location in zip(data_sources, locations):
+                    if location is not None:
+                        TEST_LOG.info('  %s: %s', source, location)
+                TEST_LOG.info('')
         try:
             instance.run_avocado()
         finally:
@@ -358,17 +389,16 @@ class TestRunner(object):
                     process.kill_process_tree(proc.pid, signal.SIGSTOP, False)
                     self.sigstopped = True
 
-        signal.signal(signal.SIGTSTP, sigtstp_handler)
-
         proc = multiprocessing.Process(target=self._run_test,
                                        args=(test_factory, queue,))
         test_status = TestStatus(self.job, queue)
 
         cycle_timeout = 1
         time_started = time.time()
+        signal.signal(signal.SIGTSTP, signal.SIG_IGN)
         proc.start()
-
-        test_status.wait_for_early_status(proc, 10)
+        signal.signal(signal.SIGTSTP, sigtstp_handler)
+        test_status.wait_for_early_status(proc, 60)
 
         # At this point, the test is already initialized and we know
         # for sure if there's a timeout set.
@@ -376,7 +406,7 @@ class TestRunner(object):
         timeout = float(timeout or self.DEFAULT_TIMEOUT)
 
         test_deadline = time_started + timeout
-        if job_deadline > 0:
+        if job_deadline is not None and job_deadline > 0:
             deadline = min(test_deadline, job_deadline)
         else:
             deadline = test_deadline
@@ -426,17 +456,23 @@ class TestRunner(object):
                                            ignore_window)
                         stage_1_msg_displayed = True
                     ignore_time_started = time.time()
+                    process.kill_process_tree(proc.pid, signal.SIGINT)
                 if (ctrl_c_count > 1) and (time_elapsed > ignore_window):
                     if not stage_2_msg_displayed:
                         abort_reason = "Interrupted by ctrl+c (multiple-times)"
                         self.job.log.debug("Killing test subprocess %s",
                                            proc.pid)
                         stage_2_msg_displayed = True
-                    os.kill(proc.pid, signal.SIGKILL)
+                    process.kill_process_tree(proc.pid, signal.SIGKILL)
 
-        # Get/update the test status
-        test_state = test_status.finish(proc, time_started, cycle_timeout,
-                                        step)
+        # Get/update the test status (decrease timeout on abort)
+        if abort_reason:
+            finish_deadline = TIMEOUT_TEST_INTERRUPTED
+        else:
+            finish_deadline = deadline
+        test_state = test_status.finish(proc, time_started, step,
+                                        finish_deadline,
+                                        result_dispatcher)
 
         # Try to log the timeout reason to test's results and update test_state
         if abort_reason:
@@ -469,87 +505,126 @@ class TestRunner(object):
         return True
 
     @staticmethod
-    def _iter_variants(template, mux):
+    def _template_to_factory(template, variant):
         """
-        Iterate through variants and set the params/variants accordingly.
+        Applies test params from variant to the test template
 
-        :param template: test template
-        :param mux: the Mux object containing the variants
-        :return: Yields tuple(test_factory including params, variant id)
-        :raises ValueError: When variant and template declare params.
+        :param template: a test template, containing the class name,
+                         followed by parameters to the class
+        :type template: tuple
+        :param variant: variant to be applied, usually containing
+                        the keys: paths, variant and variant_id
+        :type variant: dict
+        :return: tuple(new_test_factory, applied_variant)
         """
-        for variant, params in mux.itertests():
-            if params:
-                if "params" in template[1]:
-                    msg = ("Unable to multiplex test %s, params are already "
-                           "present in test factory: %s"
-                           % (template[0], template[1]))
-                    raise ValueError(msg)
-                factory = [template[0], template[1].copy()]
-                factory[1]["params"] = params
-            else:
-                factory = template
-            yield factory, variant
+        var = variant.get("variant")
+        paths = variant.get("paths")
+        klass, klass_parameters = template
+        if "params" in klass_parameters:
+            if not varianter.is_empty_variant(var):
+                msg = ("Specifying test params from test loader and "
+                       "from varianter at the same time is not yet "
+                       "supported. Please remove either variants defined"
+                       "by the varianter (%s) or make the test loader of"
+                       "test %s to not to fill variants."
+                       % (variant, template))
+                raise NotImplementedError(msg)
+            variant_id = varianter.generate_variant_id(var)
+            return template, {"variant": var,
+                              "variant_id": variant_id,
+                              "paths": paths}
+        else:
+            factory = [klass, klass_parameters.copy()]
+            factory[1]["params"] = (var, paths)
+            return factory, variant
 
-    def run_suite(self, test_suite, mux, timeout=0, replay_map=None):
+    def _iter_suite(self, test_suite, variants, execution_order):
+        """
+        Iterates through test_suite and variants in defined order
+
+        :param test_suite: a list of tests to run
+        :param variants: a varianter object to produce test params
+        :param execution_order: way of iterating through tests/variants
+        :return: generator yielding tuple(test_factory, variant)
+        """
+        if execution_order == "variants-per-test":
+            return (self._template_to_factory(template, variant)
+                    for template in test_suite
+                    for variant in variants.itertests())
+        elif execution_order == "tests-per-variant":
+            return (self._template_to_factory(template, variant)
+                    for variant in variants.itertests()
+                    for template in test_suite)
+        else:
+            raise NotImplementedError("Suite_order %s is not supported"
+                                      % execution_order)
+
+    def run_suite(self, test_suite, variants, timeout=0, replay_map=None,
+                  execution_order=None):
         """
         Run one or more tests and report with test result.
 
         :param test_suite: a list of tests to run.
-        :param mux: the multiplexer.
+        :param variants: A varianter iterator to produce test params.
         :param timeout: maximum amount of time (in seconds) to execute.
+        :param replay_map: optional list to override test class based on test
+                           index.
+        :param execution_order: Mode in which we should iterate through tests
+                                and variants.  If not provided, will default to
+                                :attr:`DEFAULT_EXECUTION_ORDER`.
         :return: a set with types of test failures.
         """
         summary = set()
         if self.job.sysinfo is not None:
             self.job.sysinfo.start_job_hook()
-        queue = queues.SimpleQueue()
+
+        # Python 3 can choose a context type for queues, but SimpleQueue
+        # lives directly under the module namespace
+        if hasattr(multiprocessing, 'SimpleQueue'):
+            queue = multiprocessing.SimpleQueue()
+        else:
+            queue = multiprocessing.queues.SimpleQueue()  # pylint: disable=E1125
 
         if timeout > 0:
             deadline = time.time() + timeout
         else:
             deadline = None
 
-        test_result_total = mux.get_number_of_tests(test_suite)
+        test_result_total = variants.get_number_of_tests(test_suite)
         no_digits = len(str(test_result_total))
         self.result.tests_total = test_result_total
-        self.result.start_tests()
         index = -1
         try:
             for test_template in test_suite:
-                test_template[1]['base_logdir'] = self.job.logdir
-                test_template[1]['job'] = self.job
-                break_loop = False
-                for test_factory, variant in self._iter_variants(test_template,
-                                                                 mux):
-                    index += 1
-                    test_parameters = test_factory[1]
-                    name = test_parameters.get("name")
-                    test_parameters["name"] = test.TestName(index + 1, name,
-                                                            variant,
-                                                            no_digits)
-                    if deadline is not None and time.time() > deadline:
-                        summary.add('INTERRUPTED')
-                        if 'methodName' in test_parameters:
-                            del test_parameters['methodName']
-                        test_factory = (test.TimeOutSkipTest, test_parameters)
-                        break_loop = not self.run_test(test_factory, queue,
-                                                       summary)
-                        if break_loop:
-                            break
-                    else:
-                        if (replay_map is not None and
-                                replay_map[index] is not None):
-                            test_parameters["methodName"] = "test"
-                            test_factory = (replay_map[index], test_parameters)
+                test_template[1]["base_logdir"] = self.job.logdir
+                test_template[1]["job"] = self.job
+            if execution_order is None:
+                execution_order = self.DEFAULT_EXECUTION_ORDER
+            for test_factory, variant in self._iter_suite(test_suite, variants,
+                                                          execution_order):
+                index += 1
+                test_parameters = test_factory[1]
+                name = test_parameters.get("name")
+                test_parameters["name"] = test.TestID(index + 1, name,
+                                                      variant,
+                                                      no_digits)
+                if deadline is not None and time.time() > deadline:
+                    summary.add('INTERRUPTED')
+                    if 'methodName' in test_parameters:
+                        del test_parameters['methodName']
+                    test_factory = (test.TimeOutSkipTest, test_parameters)
+                    if not self.run_test(test_factory, queue, summary):
+                        break
+                else:
+                    if (replay_map is not None and
+                            replay_map[index] is not None):
+                        test_parameters["methodName"] = "test"
+                        test_factory = (replay_map[index], test_parameters)
 
-                        break_loop = not self.run_test(test_factory, queue,
-                                                       summary, deadline)
-                        if break_loop:
-                            break
+                    if not self.run_test(test_factory, queue, summary,
+                                         deadline):
+                        break
                 runtime.CURRENT_TEST = None
-                if break_loop:
-                    break
         except KeyboardInterrupt:
             TEST_LOG.error('Job interrupted by ctrl+c.')
             summary.add('INTERRUPTED')
@@ -557,7 +632,6 @@ class TestRunner(object):
         if self.job.sysinfo is not None:
             self.job.sysinfo.end_job_hook()
         self.result.end_tests()
-        self.job._result_events_dispatcher.map_method('post_tests', self.job)
         self.job.funcatexit.run()
         signal.signal(signal.SIGTSTP, signal.SIG_IGN)
         return summary

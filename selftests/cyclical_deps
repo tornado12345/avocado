@@ -18,6 +18,14 @@ import sys
 import subprocess
 import tempfile
 
+# it doesn't make sense to go any further on Python 3 because snakefood
+# won't be available anyway.  it's not fair to say this check failed, so
+# let's exit successfully.  the check should be performend when running
+# on Python 2.
+if sys.version_info[0] == 3:
+    sys.exit(0)
+
+
 try:
     import networkx as nx
 except ImportError:
@@ -39,10 +47,10 @@ def has_snakefood():
     with open(os.devnull, 'w') as null:
         try:
             cmd = ['sfood', '-h']
-            res = subprocess.call(cmd, stdout=null)
+            subprocess.call(cmd, stdout=null)
         except Exception as e:
             print("Could not find sfood utility: %s: %s" % (cmd, e), file=sys.stderr)
-            print("Did you forget to 'pip install python-snakefood'?", file=sys.stderr)
+            print("Did you forget to 'pip install snakefood'?", file=sys.stderr)
             return False
     return True
 

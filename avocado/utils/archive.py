@@ -22,6 +22,8 @@ import stat
 import tarfile
 import zipfile
 
+from six import iteritems
+
 
 LOG = logging.getLogger(__name__)
 
@@ -30,7 +32,11 @@ try:
     import lzma
     LZMA_CAPABLE = True
 except ImportError:
-    LZMA_CAPABLE = False
+    try:
+        from backports import lzma
+        LZMA_CAPABLE = True
+    except ImportError:
+        LZMA_CAPABLE = False
 
 
 class ArchiveException(Exception):
@@ -172,7 +178,7 @@ class ArchiveFile(object):
             LOG.warn("Attr handling in zip files only supported on Linux.")
             return
         # Walk all files and re-create files as symlinks
-        for path, info in self._engine.NameToInfo.iteritems():
+        for path, info in iteritems(self._engine.NameToInfo):
             dst = os.path.join(dst_dir, path)
             if not os.path.exists(dst):
                 LOG.warn("One or more files in the ZIP archive '%s' could "
@@ -184,7 +190,14 @@ class ArchiveFile(object):
             attr = info.external_attr >> 16
             if attr & stat.S_IFLNK == stat.S_IFLNK:
                 dst = os.path.join(dst_dir, path)
-                src = open(dst, 'r').read()
+                if not os.path.islink(dst):
+                    # Link created as an ordinary file containing the dst path
+                    with open(dst, 'r') as dst_path:
+                        src = dst_path.read()
+                else:
+                    # Link is already there and could be outdated. Let's read
+                    # the original destination from the zip file.
+                    src = self._engine.read(path)
                 os.remove(dst)
                 os.symlink(src, dst)
                 continue    # Don't override any other attributes on links

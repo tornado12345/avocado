@@ -21,6 +21,8 @@ import os
 import re
 import sys
 
+from six import string_types, iterkeys
+
 from . import exit_codes
 from ..utils import path as utils_path
 from .settings import settings
@@ -31,6 +33,11 @@ else:
     import logutils
     NULL_HANDLER = logutils.NullHandler
 
+
+#: Pre-defined Avocado human UI logger
+LOG_UI = logging.getLogger("avocado.app")
+#: Pre-defined Avocado job/test logger
+LOG_JOB = logging.getLogger("avocado.test")
 
 #: Builtin special keywords to enable set of logging streams
 BUILTIN_STREAMS = {'app': 'application output',
@@ -78,6 +85,7 @@ class TermSupport(object):
         self.INTERRUPT = self.COLOR_RED
         self.ERROR = self.COLOR_RED
         self.WARN = self.COLOR_YELLOW
+        self.CANCEL = self.COLOR_YELLOW
         self.PARTIAL = self.COLOR_YELLOW
         self.ENDC = self.CONTROL_END
         self.LOWLIGHT = self.COLOR_DARKGREY
@@ -86,7 +94,7 @@ class TermSupport(object):
                          'screen-256color', 'screen.xterm-256color']
         term = os.environ.get("TERM")
         colored = settings.get_value('runner.output', 'colored',
-                                     key_type='bool')
+                                     key_type='bool', default=True)
         if not colored or not os.isatty(1) or term not in allowed_terms:
             self.disable()
 
@@ -102,6 +110,7 @@ class TermSupport(object):
         self.INTERRUPT = ''
         self.ERROR = ''
         self.WARN = ''
+        self.CANCEL = ''
         self.PARTIAL = ''
         self.ENDC = ''
         self.LOWLIGHT = ''
@@ -341,11 +350,11 @@ def early_start():
     Replace all outputs with in-memory handlers
     """
     if os.environ.get('AVOCADO_LOG_DEBUG'):
-        add_log_handler("avocado.app.debug", logging.StreamHandler, sys.stdout,
-                        logging.DEBUG)
+        add_log_handler(LOG_UI.getChild("debug"), logging.StreamHandler,
+                        sys.stdout, logging.DEBUG)
     if os.environ.get('AVOCADO_LOG_EARLY'):
         add_log_handler("", logging.StreamHandler, sys.stdout, logging.DEBUG)
-        add_log_handler("avocado.test", logging.StreamHandler, sys.stdout,
+        add_log_handler(LOG_JOB, logging.StreamHandler, sys.stdout,
                         logging.DEBUG)
     else:
         STD_OUTPUT.fake_outputs()
@@ -385,34 +394,33 @@ def reconfigure(args):
     else:
         STD_OUTPUT.enable_stderr()
     STD_OUTPUT.print_records()
-    app_logger = logging.getLogger("avocado.app")
     if "app" in enabled:
         app_handler = ProgressStreamHandler()
         app_handler.setFormatter(logging.Formatter("%(message)s"))
         app_handler.addFilter(FilterInfoAndLess())
         app_handler.stream = STD_OUTPUT.stdout
-        app_logger.addHandler(app_handler)
-        app_logger.propagate = False
-        app_logger.level = logging.DEBUG
+        LOG_UI.addHandler(app_handler)
+        LOG_UI.propagate = False
+        LOG_UI.level = logging.DEBUG
     else:
-        disable_log_handler("avocado.app")
+        disable_log_handler(LOG_UI)
     app_err_handler = ProgressStreamHandler()
     app_err_handler.setFormatter(logging.Formatter("%(message)s"))
     app_err_handler.addFilter(FilterWarnAndMore())
     app_err_handler.stream = STD_OUTPUT.stderr
-    app_logger.addHandler(app_err_handler)
-    app_logger.propagate = False
+    LOG_UI.addHandler(app_err_handler)
+    LOG_UI.propagate = False
     if not os.environ.get("AVOCADO_LOG_EARLY"):
-        logging.getLogger("avocado.test.stdout").propagate = False
-        logging.getLogger("avocado.test.stderr").propagate = False
+        LOG_JOB.getChild("stdout").propagate = False
+        LOG_JOB.getChild("stderr").propagate = False
         if "early" in enabled:
             add_log_handler("", logging.StreamHandler, STD_OUTPUT.stdout,
                             logging.DEBUG)
-            add_log_handler("avocado.test", logging.StreamHandler,
+            add_log_handler(LOG_JOB, logging.StreamHandler,
                             STD_OUTPUT.stdout, logging.DEBUG)
         else:
             disable_log_handler("")
-            disable_log_handler("avocado.test")
+            disable_log_handler(LOG_JOB)
     if "remote" in enabled:
         add_log_handler("avocado.fabric", stream=STD_OUTPUT.stdout,
                         level=logging.DEBUG)
@@ -424,12 +432,12 @@ def reconfigure(args):
     # Not enabled by env
     if not os.environ.get('AVOCADO_LOG_DEBUG'):
         if "debug" in enabled:
-            add_log_handler("avocado.app.debug", stream=STD_OUTPUT.stdout)
+            add_log_handler(LOG_UI.getChild("debug"), stream=STD_OUTPUT.stdout)
         else:
-            disable_log_handler("avocado.app.debug")
+            disable_log_handler(LOG_UI.getChild("debug"))
 
     # Add custom loggers
-    for name in [_ for _ in enabled if _ not in BUILTIN_STREAMS.iterkeys()]:
+    for name in [_ for _ in enabled if _ not in iterkeys(BUILTIN_STREAMS)]:
         stream_level = re.split(r'(?<!\\):', name, maxsplit=1)
         name = stream_level[0]
         if len(stream_level) == 1:
@@ -440,9 +448,9 @@ def reconfigure(args):
         try:
             add_log_handler(name, logging.StreamHandler, STD_OUTPUT.stdout,
                             level)
-        except ValueError, details:
-            app_logger.error("Failed to set logger for --show %s:%s: %s.",
-                             name, level, details)
+        except ValueError as details:
+            LOG_UI.error("Failed to set logger for --show %s:%s: %s.",
+                         name, level, details)
             sys.exit(exit_codes.AVOCADO_FAIL)
     # Remove the in-memory handlers
     for handler in logging.root.handlers:
@@ -555,6 +563,10 @@ class Paginator(object):
         except Exception:
             pass
 
+    def flush(self):
+        if not self.pipe.closed:
+            self.pipe.flush()
+
 
 def add_log_handler(logger, klass=logging.StreamHandler, stream=sys.stdout,
                     level=logging.INFO, fmt='%(name)s: %(message)s'):
@@ -569,18 +581,21 @@ def add_log_handler(logger, klass=logging.StreamHandler, stream=sys.stdout,
     :param level: Log level (defaults to `INFO``)
     :param fmt: Logging format (defaults to ``%(name)s: %(message)s``)
     """
+    if isinstance(logger, string_types):
+        logger = logging.getLogger(logger)
     handler = klass(stream)
     handler.setLevel(level)
-    if isinstance(fmt, str):
+    if isinstance(fmt, string_types):
         fmt = logging.Formatter(fmt=fmt)
     handler.setFormatter(fmt)
-    logging.getLogger(logger).addHandler(handler)
-    logging.getLogger(logger).propagate = False
+    logger.addHandler(handler)
+    logger.propagate = False
     return handler
 
 
 def disable_log_handler(logger):
-    logger = logging.getLogger(logger)
+    if isinstance(logger, string_types):
+        logger = logging.getLogger(logger)
     # Handlers might be reused elsewhere, can't delete them
     while logger.handlers:
         logger.handlers.pop()
@@ -594,63 +609,61 @@ class LoggingFile(object):
     File-like object that will receive messages pass them to logging.
     """
 
-    def __init__(self, prefix='', level=logging.DEBUG,
-                 logger=[logging.getLogger()]):
+    def __init__(self, prefixes=None, level=logging.DEBUG,
+                 loggers=None):
         """
-        Constructor. Sets prefixes and which logger is going to be used.
+        Constructor. Sets prefixes and which loggers are going to be used.
 
-        :param prefix - The prefix for each line logged by this object.
+        :param prefixes: Prefix per logger to be prefixed to each line.
+        :param level: Log level to be used when writing messages.
+        :param loggers: Loggers into which write should be issued. (list)
         """
-
-        self._prefix = prefix
+        if not loggers:
+            loggers = [logging.getLogger()]
         self._level = level
-        self._buffer = []
-        if not isinstance(logger, list):
-            logger = [logger]
-        self._logger = logger
+        self._loggers = loggers
+        if prefixes is None:
+            prefixes = [""] * len(loggers)
+        self._prefixes = prefixes
 
     def write(self, data):
         """"
-        Writes data only if it constitutes a whole line. If it's not the case,
-        store it in a buffer and wait until we have a complete line.
+        Splits the line to individual lines and forwards them into loggers
+        with expected prefixes. It includes the tailing newline <lf> as well
+        as the last partial message. Do configure your logging to not to add
+        newline <lf> automatically.
         :param data - Raw data (a string) that will be processed.
         """
         # splitlines() discards a trailing blank line, so use split() instead
         data_lines = data.split('\n')
-        if len(data_lines) > 1:
-            self._buffer.append(data_lines[0])
-            self._flush_buffer()
+        if len(data_lines) > 1:     # when not last line, contains \n
+            self._log_line("%s\n" % data_lines[0])
         for line in data_lines[1:-1]:
-            self._log_line(line)
-        if data_lines[-1]:
-            self._buffer.append(data_lines[-1])
-
-    def writelines(self, lines):
-        """"
-        Writes itertable of lines
-
-        :param lines: An iterable of strings that will be processed.
-        """
-        for data in lines:
-            self.write(data)
+            self._log_line("%s\n" % line)
+        if data_lines[-1]:  # Last line does not contain \n
+            self._log_line(data_lines[-1])
 
     def _log_line(self, line):
         """
-        Passes lines of output to the logging module.
+        Forwards line to all the expected loggers along with expected prefix
         """
-        for lg in self._logger:
-            lg.log(self._level, self._prefix + line)
-
-    def _flush_buffer(self):
-        if self._buffer:
-            self._log_line(''.join(self._buffer))
-            self._buffer = []
+        for logger, prefix in zip(self._loggers, self._prefixes):
+            logger.log(self._level, prefix + line)
 
     def flush(self):
-        self._flush_buffer()
+        pass
 
     def isatty(self):
         return False
+
+    def add_logger(self, logger, prefix=""):
+        self._loggers.append(logger)
+        self._prefixes.append(prefix)
+
+    def rm_logger(self, logger):
+        idx = self._loggers.index(logger)
+        self._loggers.remove(logger)
+        self._prefixes = self._prefixes[:idx] + self._prefixes[idx+1:]
 
 
 class Throbber(object):
@@ -691,7 +704,6 @@ def log_plugin_failures(failures):
                      :class:`avocado.core.dispatcher.Dispatcher`
                      attribute `load_failures`
     """
-    log = logging.getLogger("avocado.app")
     msg_fmt = 'Failed to load plugin from module "%s": %s'
     silenced = settings.get_value('plugins',
                                   'skip_broken_plugin_notification',
@@ -699,5 +711,5 @@ def log_plugin_failures(failures):
     for failure in failures:
         if failure[0].module_name in silenced:
             continue
-        log.error(msg_fmt, failure[0].module_name,
-                  failure[1].__repr__())
+        LOG_UI.error(msg_fmt, failure[0].module_name,
+                     failure[1].__repr__())

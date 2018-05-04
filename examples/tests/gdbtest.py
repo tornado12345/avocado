@@ -2,9 +2,12 @@
 
 import os
 
+from six.moves import xrange as range
+
 from avocado import Test
 from avocado import main
 from avocado.utils import gdb
+from avocado.utils import genio
 from avocado.utils import process
 
 
@@ -12,6 +15,8 @@ class GdbTest(Test):
 
     """
     Execute the gdb test
+
+    :avocado: tags=requires_c_compiler
     """
 
     VALID_CMDS = ["-list-target-features",
@@ -27,15 +32,21 @@ class GdbTest(Test):
                     "-auto-debug-it"]
 
     def setUp(self):
-        self.return99_binary_path = os.path.join(self.outputdir, 'return99')
-        return99_source_path = os.path.join(self.datadir, 'return99.c')
-        process.system('gcc -O0 -g %s -o %s' % (return99_source_path,
-                                                self.return99_binary_path))
+        self.return99_binary_path = os.path.join(self.teststmpdir, 'return99')
+        if not os.path.exists(self.return99_binary_path):
+            return99_source_path = self.get_data('return99.c')
+            if return99_source_path is None:
+                self.cancel('Test is missing data file "return99.c"')
+            process.system('gcc -O0 -g %s -o %s' % (return99_source_path,
+                                                    self.return99_binary_path))
 
-        self.segfault_binary_path = os.path.join(self.outputdir, 'segfault')
-        segfault_source_path = os.path.join(self.datadir, 'segfault.c')
-        process.system('gcc -O0 -g %s -o %s' % (segfault_source_path,
-                                                self.segfault_binary_path))
+        self.segfault_binary_path = os.path.join(self.teststmpdir, 'segfault')
+        if not os.path.exists(self.segfault_binary_path):
+            segfault_source_path = self.get_data('segfault.c')
+            if segfault_source_path is None:
+                self.cancel('Test is missing data file "segfault.c"')
+            process.system('gcc -O0 -g %s -o %s' % (segfault_source_path,
+                                                    self.segfault_binary_path))
 
     @staticmethod
     def is_process_alive(process):
@@ -56,10 +67,10 @@ class GdbTest(Test):
         self.log.info("Testing execution of multiple GDB instances")
         process_count = 10
         gdb_instances = []
-        for i in xrange(0, process_count):
+        for i in range(0, process_count):
             gdb_instances.append(gdb.GDB())
 
-        for i in xrange(0, process_count):
+        for i in range(0, process_count):
             self.assertEqual(gdb_instances[i].exit(), 0)
 
     def test_existing_commands_raw(self):
@@ -124,7 +135,7 @@ class GdbTest(Test):
 
     def test_load_set_breakpoint_run_exit(self):
         """
-        Test a common GDB cycle: load, set break, del break, run, exit
+        Test a common GDB cycle: load, set break, delete break, run, exit
         """
         self.log.info("Testing a common GDB cycle")
         g = gdb.GDB()
@@ -186,7 +197,7 @@ class GdbTest(Test):
         g = gdb.GDB()
 
         # Do 100 cycle of target (kind of connects) and disconnects
-        for i in xrange(0, 100):
+        for _ in range(0, 100):
             cmd = '-target-select extended-remote :%s' % s.port
             r = g.cmd(cmd)
             self.assertEqual(r.result.class_, 'connected')
@@ -211,7 +222,7 @@ class GdbTest(Test):
         s = gdb.GDBServer()
         g = gdb.GDB()
 
-        for i in xrange(0, 100):
+        for _ in range(0, 100):
             r = g.connect(s.port)
             self.assertEqual(r.result.class_, 'connected')
             r = g.disconnect()
@@ -293,7 +304,7 @@ class GdbTest(Test):
         self.log.info("Testing execution of multiple GDB server instances")
         process_count = 10
         server_instances = []
-        for i in xrange(0, process_count):
+        for i in range(0, process_count):
             s = gdb.GDBServer()
             c = gdb.GDB()
             c.connect(s.port)
@@ -301,7 +312,7 @@ class GdbTest(Test):
             c.disconnect()
             server_instances.append(s)
 
-        for i in xrange(0, process_count):
+        for i in range(0, process_count):
             self.assertTrue(self.is_process_alive(server_instances[i].process))
             server_instances[i].exit()
             self.assertFalse(self.is_process_alive(server_instances[i].process))
@@ -327,7 +338,7 @@ class GdbTest(Test):
         """
         self.log.info('Testing GDB interactivity with arguments')
         result = process.run("%s 0" % self.return99_binary_path)
-        self.assertEquals(result.exit_status, 0)
+        self.assertEqual(result.exit_status, 0)
 
     def test_exit_status(self):
         """
@@ -341,7 +352,7 @@ class GdbTest(Test):
             self.log.info('Expecting exit status "%s"', exp)
             cmd = "%s %s" % (self.return99_binary_path, arg)
             result = process.run(cmd, ignore_status=True)
-            self.assertEquals(result.exit_status, exp)
+            self.assertEqual(result.exit_status, exp)
 
     def test_server_stderr(self):
         self.log.info('Testing server stderr collection')
@@ -349,8 +360,8 @@ class GdbTest(Test):
         s.exit()
         self.assertTrue(os.path.exists(s.stderr_path))
 
-        stderr_lines = open(s.stderr_path, 'r').readlines()
-        listening_line = "Listening on port %s\n" % s.port
+        stderr_lines = genio.read_all_lines(s.stderr_path)
+        listening_line = "Listening on port %s" % s.port
         self.assertIn(listening_line, stderr_lines)
 
     def test_server_stdout(self):
@@ -365,8 +376,8 @@ class GdbTest(Test):
         self.assertTrue(os.path.exists(s.stdout_path))
         self.assertTrue(os.path.exists(s.stderr_path))
 
-        stdout_lines = open(s.stdout_path, 'r').readlines()
-        self.assertIn("return 99\n", stdout_lines)
+        stdout_lines = genio.read_all_lines(s.stdout_path)
+        self.assertIn("return 99", stdout_lines)
 
     def test_interactive_stdout(self):
         """

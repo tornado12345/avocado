@@ -20,11 +20,13 @@ import os
 import signal
 import sys
 
+from . import data_dir
 from . import output
 from .dispatcher import CLICmdDispatcher
 from .dispatcher import CLIDispatcher
 from .output import STD_OUTPUT
 from .parser import Parser
+from ..utils import process
 
 
 class AvocadoApp(object):
@@ -38,15 +40,22 @@ class AvocadoApp(object):
         # Catch all libc runtime errors to STDERR
         os.environ['LIBC_FATAL_STDERR_'] = '1'
 
+        def sigterm_handler(signum, frame):     # pylint: disable=W0613
+            children = process.get_children_pids(os.getpid())
+            for child in children:
+                process.kill_process_tree(int(child), sig=signal.SIGKILL)
+            raise SystemExit('Terminated')
+
+        signal.signal(signal.SIGTERM, sigterm_handler)
         signal.signal(signal.SIGTSTP, signal.SIG_IGN)   # ignore ctrl+z
         self.parser = Parser()
         output.early_start()
         try:
+            self.parser.start()
             self.cli_dispatcher = CLIDispatcher()
             self.cli_cmd_dispatcher = CLICmdDispatcher()
             output.log_plugin_failures(self.cli_dispatcher.load_failures +
                                        self.cli_cmd_dispatcher.load_failures)
-            self.parser.start()
             if self.cli_cmd_dispatcher.extensions:
                 self.cli_cmd_dispatcher.map_method('configure', self.parser)
             if self.cli_dispatcher.extensions:
@@ -84,3 +93,5 @@ class AvocadoApp(object):
             # This makes sure we cleanup the console (stty echo). The only way
             # to avoid cleaning it is to kill the less (paginator) directly
             STD_OUTPUT.close()
+            # Force-close tmp dir
+            data_dir.clean_tmp_files()

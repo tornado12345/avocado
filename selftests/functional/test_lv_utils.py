@@ -3,19 +3,18 @@ avocado.utils.lv_utils selftests
 :author: Lukas Doktor <ldoktor@redhat.com>
 :copyright: 2016 Red Hat, Inc
 """
-from avocado.utils import process, lv_utils
+from __future__ import print_function
+
 import glob
 import os
-import shutil
 import sys
+import shutil
 import tempfile
 import unittest
 
+from six.moves import xrange as range
 
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+from avocado.utils import process, lv_utils
 
 
 class LVUtilsTest(unittest.TestCase):
@@ -24,6 +23,8 @@ class LVUtilsTest(unittest.TestCase):
     Check the LVM related utilities
     """
 
+    @unittest.skipIf(sys.platform.startswith('darwin'),
+                     'macOS does not support LVM')
     @unittest.skipIf(process.system("which vgs", ignore_status=True),
                      "LVM utils not installed (command vgs is missing)")
     @unittest.skipIf(not process.can_sudo(), "This test requires root or "
@@ -37,7 +38,10 @@ class LVUtilsTest(unittest.TestCase):
         for vg_name in self.vgs:
             lv_utils.vg_remove(vg_name)
 
-    @unittest.skipIf(process.system("modinfo scsi_debug", ignore_status=True),
+    @unittest.skipIf(sys.platform.startswith('darwin'),
+                     'macOS does not support LVM')
+    @unittest.skipIf(process.system("modinfo scsi_debug", shell=True,
+                                    ignore_status=True),
                      "Kernel mod 'scsi_debug' not available.")
     @unittest.skipIf(process.system("lsmod | grep -q scsi_debug; [ $? -ne 0 ]",
                                     shell=True, ignore_status=True),
@@ -55,15 +59,15 @@ class LVUtilsTest(unittest.TestCase):
             disk = disks.pop()
             self.assertEqual(lv_utils.get_diskspace(disk), "8388608")
         except BaseException:
-            for _ in xrange(10):
+            for _ in range(10):
                 res = process.run("rmmod scsi_debug", ignore_status=True,
                                   sudo=True)
                 if not res.exit_status:
-                    print "scsi_debug removed"
+                    print("scsi_debug removed")
                     break
             else:
-                print "Fail to remove scsi_debug: %s" % res
-        for _ in xrange(10):
+                print("Fail to remove scsi_debug: %s" % res)
+        for _ in range(10):
             res = process.run("rmmod scsi_debug", ignore_status=True,
                               sudo=True)
             if not res.exit_status:
@@ -71,6 +75,8 @@ class LVUtilsTest(unittest.TestCase):
         else:
             self.fail("Fail to remove scsi_debug after testing: %s" % res)
 
+    @unittest.skipIf(sys.platform.startswith('darwin'),
+                     'macOS does not support LVM')
     @unittest.skipIf(process.system("vgs --all | grep -q avocado_testing_vg_"
                                     "e5kj3erv11a; [ $? -ne 0 ]", sudo=True,
                                     shell=True, ignore_status=True),
@@ -125,16 +131,16 @@ class LVUtilsTest(unittest.TestCase):
                 process.run("mountpoint %s && umount %s"
                             % (mount_loc, mount_loc), shell=True, sudo=True)
             except BaseException as details:
-                print "Fail to unmount LV: %s" % details
+                print("Fail to unmount LV: %s" % details)
             try:
                 lv_utils.lv_remove(vg_name, lv_name)
-            except BaseException, details:
-                print "Fail to cleanup LV: %s" % details
+            except BaseException as details:
+                print("Fail to cleanup LV: %s" % details)
             try:
                 lv_utils.vg_ramdisk_cleanup(ramdisk_filename, vg_ramdisk_dir,
                                             vg_name, loop_device)
             except BaseException as details:
-                print "Fail to cleanup vg_ramdisk: %s" % details
+                print("Fail to cleanup vg_ramdisk: %s" % details)
             raise
 
 

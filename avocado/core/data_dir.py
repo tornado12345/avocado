@@ -26,28 +26,31 @@ The general reasoning to find paths is:
 * The next best location is the default user specific one.
 """
 import os
-import sys
 import shutil
+import sys
 import time
 import tempfile
 
+from six.moves import xrange as range
+
 from . import job_id
 from . import settings
+from . import exit_codes
+from .output import LOG_JOB, LOG_UI
 from ..utils import path as utils_path
 from ..utils.data_structures import Borg
 
-_BASE_DIR = os.path.join(sys.modules[__name__].__file__, "..", "..", "..")
-_BASE_DIR = os.path.abspath(_BASE_DIR)
-_IN_TREE_TESTS_DIR = os.path.join(_BASE_DIR, 'examples', 'tests')
-
-SYSTEM_BASE_DIR = '/var/lib/avocado'
 if 'VIRTUAL_ENV' in os.environ:
     SYSTEM_BASE_DIR = os.environ['VIRTUAL_ENV']
+    USER_BASE_DIR = SYSTEM_BASE_DIR
+else:
+    SYSTEM_BASE_DIR = '/var/lib/avocado'
+    USER_BASE_DIR = os.path.expanduser('~/avocado')
+
 SYSTEM_TEST_DIR = os.path.join(SYSTEM_BASE_DIR, 'tests')
 SYSTEM_DATA_DIR = os.path.join(SYSTEM_BASE_DIR, 'data')
 SYSTEM_LOG_DIR = os.path.join(SYSTEM_BASE_DIR, 'job-results')
 
-USER_BASE_DIR = os.path.expanduser('~/avocado')
 USER_TEST_DIR = os.path.join(USER_BASE_DIR, 'tests')
 USER_DATA_DIR = os.path.join(USER_BASE_DIR, 'data')
 USER_LOG_DIR = os.path.join(USER_BASE_DIR, 'job-results')
@@ -57,7 +60,8 @@ def _get_settings_dir(dir_name):
     """
     Returns a given "datadir" directory as set by the configuration system
     """
-    return settings.settings.get_value('datadir.paths', dir_name, 'path')
+    path = settings.settings.get_value('datadir.paths', dir_name, 'path')
+    return os.path.abspath(path)
 
 
 def _get_rw_dir(settings_location, system_location, user_location):
@@ -107,7 +111,8 @@ def get_test_dir():
         return configured
 
     if settings.settings.intree:
-        return _IN_TREE_TESTS_DIR
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        return os.path.join(base_dir, 'examples', 'tests')
 
     if utils_path.usable_ro_dir(SYSTEM_TEST_DIR):
         return SYSTEM_TEST_DIR
@@ -153,66 +158,88 @@ def get_logs_dir():
                        SYSTEM_LOG_DIR, USER_LOG_DIR)
 
 
-def create_job_logs_dir(logdir=None, unique_id=None):
+def create_job_logs_dir(base_dir=None, unique_id=None):
     """
     Create a log directory for a job, or a stand alone execution of a test.
 
-    :param logdir: Base log directory, if `None`, use value from configuration.
+    :param base_dir: Base log directory, if `None`, use value from configuration.
     :param unique_id: The unique identification. If `None`, create one.
-    :rtype: basestring
+    :rtype: str
     """
     start_time = time.strftime('%Y-%m-%dT%H.%M')
-    if logdir is None:
-        logdir = get_logs_dir()
-    if not os.path.exists(logdir):
-        utils_path.init_dir(logdir)
+    if base_dir is None:
+        base_dir = get_logs_dir()
+        if not base_dir:
+            LOG_UI.error("No writable location for logs found, use "
+                         "'avocado config --datadir' to get the "
+                         "locations and check system permissions.")
+            sys.exit(exit_codes.AVOCADO_FAIL)
+    if not os.path.exists(base_dir):
+        utils_path.init_dir(base_dir)
     # Stand alone tests handling
     if unique_id is None:
         unique_id = job_id.create_unique_job_id()
 
-    debugdir = os.path.join(logdir, 'job-%s-%s' % (start_time, unique_id[:7]))
-    for i in xrange(7, len(unique_id)):
+    logdir = os.path.join(base_dir, 'job-%s-%s' % (start_time, unique_id[:7]))
+    for i in range(7, len(unique_id)):
         try:
-            os.mkdir(debugdir)
+            os.mkdir(logdir)
         except OSError:
-            debugdir += unique_id[i]
+            logdir += unique_id[i]
             continue
-        return debugdir
-    debugdir += "."
-    for i in xrange(1000):
+        return logdir
+    logdir += "."
+    for i in range(1000):
         try:
-            os.mkdir(debugdir + str(i))
+            os.mkdir(logdir + str(i))
         except OSError:
             continue
-        return debugdir + str(i)
+        return logdir + str(i)
     raise IOError("Unable to create unique logdir in 1000 iterations: %s"
-                  % (debugdir))
+                  % (logdir))
 
 
 class _TmpDirTracker(Borg):
 
     def __init__(self):
         Borg.__init__(self)
+        self.basedir = None
 
-    def get(self):
+    def get(self, basedir):
         if not hasattr(self, 'tmp_dir'):
-            self.tmp_dir = tempfile.mkdtemp(prefix='avocado_')
+            if basedir is not None:
+                self.basedir = basedir
+            self.tmp_dir = tempfile.mkdtemp(prefix='avocado_',
+                                            dir=self.basedir)
+        elif basedir is not None and basedir != self.basedir:
+            LOG_JOB.error("The tmp_dir was already created. The new basedir "
+                          "you're trying to provide will have no effect.")
         return self.tmp_dir
+
+    def unittest_refresh_dir_tracker(self):
+        """
+        This force-removes the tmp_dir and refreshes the tracker to create new
+        """
+        if not hasattr(self, "tmp_dir"):
+            return
+        shutil.rmtree(self.__dict__.pop("tmp_dir"))
 
     def __del__(self):
         tmp_dir = getattr(self, 'tmp_dir', None)
-        if tmp_dir is not None:
+
+        if tmp_dir is not None and self.basedir is None:
             try:
                 if os.path.isdir(tmp_dir):
                     shutil.rmtree(tmp_dir)
-            except AttributeError:
+            # Need catch AttributeError and TypeError.
+            except (AttributeError, TypeError):
                 pass
 
 
 _tmp_tracker = _TmpDirTracker()
 
 
-def get_tmp_dir():
+def get_tmp_dir(basedir=None):
     """
     Get the most appropriate tmp dir location.
 
@@ -222,7 +249,7 @@ def get_tmp_dir():
         * Copies of a test suite source code
         * Compiled test suite source code
     """
-    tmp_dir = _tmp_tracker.get()
+    tmp_dir = _tmp_tracker.get(basedir)
     # This assert is a security mechanism for avoiding re-creating
     # the temporary directory, since that's a security breach.
     msg = ('Temporary dir %s no longer exists. This likely means the '

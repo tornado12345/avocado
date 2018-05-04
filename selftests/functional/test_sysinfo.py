@@ -1,19 +1,25 @@
 import os
-import sys
 import shutil
 import tempfile
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core import exit_codes
 from avocado.utils import process
+from avocado.utils import script
 
 
 basedir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 basedir = os.path.abspath(basedir)
+
+AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
+
+COMMANDS_TIMEOUT_CONF = """
+[sysinfo.collect]
+commands_timeout = %s
+
+[sysinfo.collectibles]
+commands = %s
+"""
 
 
 class SysInfoTest(unittest.TestCase):
@@ -23,13 +29,13 @@ class SysInfoTest(unittest.TestCase):
 
     def test_sysinfo_enabled(self):
         os.chdir(basedir)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=on '
-                    'passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=on '
+                    'passtest.py' % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          'Avocado did not return rc %d:\n%s' % (expected_rc, result))
-        output = result.stdout + result.stderr
+        output = result.stdout_text + result.stderr_text
         sysinfo_dir = None
         for line in output.splitlines():
             if 'JOB LOG' in line:
@@ -49,13 +55,13 @@ class SysInfoTest(unittest.TestCase):
 
     def test_sysinfo_disabled(self):
         os.chdir(basedir)
-        cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off '
-                    'passtest.py' % self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s --sysinfo=off passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          'Avocado did not return rc %d:\n%s' % (expected_rc, result))
-        output = result.stdout + result.stderr
+        output = result.stdout_text + result.stderr_text
         sysinfo_dir = None
         for line in output.splitlines():
             if 'JOB LOG' in line:
@@ -69,6 +75,58 @@ class SysInfoTest(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
+
+    def run_sysinfo_interrupted(self, sleep, timeout, exp_duration):
+        os.chdir(basedir)
+        commands_path = os.path.join(self.tmpdir, "commands")
+        script.make_script(commands_path, "sleep %s" % sleep)
+        config_path = os.path.join(self.tmpdir, "config.conf")
+        script.make_script(config_path,
+                           COMMANDS_TIMEOUT_CONF % (timeout, commands_path))
+        cmd_line = ("%s --show all --config %s run --job-results-dir %s "
+                    "--sysinfo=on passtest.py"
+                    % (AVOCADO, config_path, self.tmpdir))
+        result = process.run(cmd_line)
+        if timeout > 0:
+            self.assertLess(result.duration, exp_duration, "Execution took "
+                            "longer than %ss which is likely due to "
+                            "malfunctioning commands_timeout "
+                            "sysinfo.collect feature:\n%s"
+                            % (exp_duration, result))
+        else:
+            self.assertGreater(result.duration, exp_duration, "Execution took "
+                               "less than %ss which is likely due to "
+                               "malfunctioning commands_timeout "
+                               "sysinfo.collect feature:\n%s"
+                               % (exp_duration, result))
+        expected_rc = exit_codes.AVOCADO_ALL_OK
+        self.assertEqual(result.exit_status, expected_rc,
+                         'Avocado did not return rc %d:\n%s'
+                         % (expected_rc, result))
+        sleep_log = os.path.join(self.tmpdir, "latest", "sysinfo", "pre",
+                                 "sleep %s" % sleep)
+        if not os.path.exists(sleep_log):
+            path = os.path.abspath(sleep_log)
+            while not os.path.exists(path):
+                tmp = os.path.split(path)[0]
+                if tmp == path:
+                    break
+                path = tmp
+            raise AssertionError("Sleep output not recorded in '%s', first "
+                                 "existing location '%s' contains:\n%s"
+                                 % (sleep_log, path, os.listdir(path)))
+
+    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < 2,
+                     "Skipping test that take a long time to run, are "
+                     "resource intensive or time sensitve")
+    def test_sysinfo_interrupted(self):
+        self.run_sysinfo_interrupted(10, 1, 15)
+
+    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < 2,
+                     "Skipping test that take a long time to run, are "
+                     "resource intensive or time sensitve")
+    def test_sysinfo_not_interrupted(self):
+        self.run_sysinfo_interrupted(5, -1, 10)
 
 
 if __name__ == '__main__':

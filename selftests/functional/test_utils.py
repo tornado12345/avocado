@@ -6,16 +6,12 @@ import stat
 import sys
 import tempfile
 import time
+import unittest
+
+from six.moves import xrange as range
 
 from avocado.utils.filelock import FileLock
 from avocado.utils.stacktrace import prepare_exc_info
-
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
-
 from avocado.utils import process
 
 
@@ -148,7 +144,7 @@ class ProcessTest(unittest.TestCase):
         time.sleep(3)
         proc.terminate()
         proc.wait()
-        stdout = proc.get_stdout()
+        stdout = proc.get_stdout().decode()
         self.assertIn('memory', stdout, 'result: %s' % stdout)
         self.assertRegexpMatches(stdout, '[0-9]+')
 
@@ -156,15 +152,14 @@ class ProcessTest(unittest.TestCase):
         proc = process.SubProcess(self.fake_uptime)
         result = proc.run()
         self.assertEqual(result.exit_status, 0, 'result: %s' % result)
-        self.assertIn('load average', result.stdout)
+        self.assertIn(b'load average', result.stdout)
 
     def tearDown(self):
         shutil.rmtree(self.base_logdir)
 
 
 def file_lock_action(args):
-    path, players = args
-    max_individual_timeout = 0.021
+    path, players, max_individual_timeout = args
     max_timeout = max_individual_timeout * players
     with FileLock(path, max_timeout):
         sleeptime = random.random() / 100
@@ -176,12 +171,19 @@ class FileLockTest(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
 
-    @unittest.skipIf(os.environ.get("AVOCADO_CHECK_LONG") != "1",
-                     "Skipping test that takes a long time to run")
+    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < 2,
+                     "Skipping test that take a long time to run, are "
+                     "resource intensive or time sensitve")
     def test_filelock(self):
+        # Calculate the timeout based on t_100_iter + 2e-5*players
+        start = time.time()
+        for _ in range(100):
+            with FileLock(self.tmpdir):
+                pass
+        timeout = 0.02 + (time.time() - start)
         players = 1000
         pool = multiprocessing.Pool(players)
-        args = [(self.tmpdir, players)] * players
+        args = [(self.tmpdir, players, timeout)] * players
         try:
             pool.map(file_lock_action, args)
         except:

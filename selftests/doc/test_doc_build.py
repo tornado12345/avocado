@@ -4,13 +4,8 @@ Build documentation and report whether we had warning/error messages.
 This is geared towards documentation build regression testing.
 """
 import os
-import sys
 import urllib
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.utils import process
 
@@ -59,7 +54,9 @@ class DocBuildTest(unittest.TestCase):
                            'nonexisting document u\'api/test/avocado.utils\'')
         doc_dir = os.path.join(basedir, 'docs')
         process.run('make -C %s clean' % doc_dir)
-        result = process.run('make -C %s html' % doc_dir)
+        result = process.run('make -C %s html' % doc_dir, ignore_status=True)
+        self.assertFalse(result.exit_status, "Doc build reported non-zero "
+                         "status:\n%s" % result)
         stdout = result.stdout.splitlines()
         stderr = result.stderr.splitlines()
         output_lines = stdout + stderr

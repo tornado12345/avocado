@@ -15,10 +15,34 @@
 TAP output module.
 """
 
-import logging
+import os
 
+from avocado.core.output import LOG_UI
 from avocado.core.parser import FileOrStdoutAction
 from avocado.core.plugin_interfaces import CLI, ResultEvents
+
+
+def file_log_factory(log_file):
+    """
+    Generates a function which simulates writes to logger and outputs to file
+
+    :param log_file: The output file
+    """
+    def writeln(msg, *writeargs):
+        """
+        Format msg and append '\n'
+        """
+        if writeargs:
+            try:
+                msg %= writeargs
+            except TypeError as details:
+                raise TypeError("%s: msg='%s' args='%s'" %
+                                (details, msg, writeargs))
+        ret = log_file.write(msg + "\n")
+        log_file.flush()
+        os.fsync(log_file)
+        return ret
+    return writeln
 
 
 class TAPResult(ResultEvents):
@@ -31,38 +55,34 @@ class TAPResult(ResultEvents):
     description = "TAP - Test Anything Protocol results"
 
     def __init__(self, args):
-        def writeln(msg, *writeargs):
-            """
-            Format msg and append '\n'
-            """
-            if writeargs:
-                try:
-                    msg %= writeargs
-                except TypeError, details:
-                    raise TypeError("%s: msg='%s' args='%s'" %
-                                    (details, msg, writeargs))
-            return self.output.write(msg + "\n")
+        self.__logs = []
+        self.__open_files = []
+        output = getattr(args, 'tap', None)
+        if output == '-':
+            log = LOG_UI.debug
+            self.__logs.append(log)
+        elif output is not None:
+            log = open(output, "w", 1)
+            self.__open_files.append(log)
+            self.__logs.append(file_log_factory(log))
+        self.is_header_printed = False
 
-        def silent(msg, *writeargs):
-            pass
-
-        self.output = getattr(args, 'tap', None)
-        if self.output is None:
-            self.__write = silent
-        elif self.output == '-':
-            self.__write = logging.getLogger(
-                "avocado.app").debug   # pylint: disable=R0204
-        else:
-            self.output = open(self.output, "w", 1)
-            self.__write = writeln
+    def __write(self, msg, *writeargs):
+        """
+        Pass through the message to all registered log functions
+        """
+        for log in self.__logs:
+            log(msg, *writeargs)
 
     def pre_tests(self, job):
         """
         Log the test plan
         """
-        tests = len(job.test_suite)
-        if tests > 0:
-            self.__write("1..%d", tests)
+        # Should we add default results.tap?
+        if getattr(job.args, 'tap_job_result', 'off') == 'on':
+            log = open(os.path.join(job.logdir, 'results.tap'), "w", 1)
+            self.__open_files.append(log)
+            self.__logs.append(file_log_factory(log))
 
     def start_test(self, result, state):
         pass
@@ -71,6 +91,10 @@ class TAPResult(ResultEvents):
         """
         Log the test status and details
         """
+        if not self.is_header_printed:
+            self.__write("1..%d", result.tests_total)
+            self.is_header_printed = True
+
         status = state.get("status", "ERROR")
         name = state.get("name")
         if not name:
@@ -82,13 +106,19 @@ class TAPResult(ResultEvents):
                 name = "_" + name
         # First log the system output
         self.__write("# debug.log of %s:", name)
-        if state.get('text_output'):
-            for line in state['text_output'].splitlines():
-                self.__write("#   %s", line)
-        if status in ("PASS", "WARN"):
+
+        with open(state.get("logfile"), "r") as logfile_obj:
+            for line in logfile_obj:
+                self.__write("#   %s", line.rstrip())
+
+        if status == "PASS":
             self.__write("ok %s %s", result.tests_run, name)
-        elif status == "SKIP":
-            self.__write("ok %s %s  # SKIP %s", result.tests_run, name, state.get("fail_reason"))
+        elif status == "WARN":
+            self.__write("ok %s %s  # Warnings were printed into warn log",
+                         result.tests_run, name)
+        elif status in ("SKIP", "CANCEL"):
+            self.__write("ok %s %s  # SKIP %s", result.tests_run, name,
+                         state.get("fail_reason"))
         else:
             self.__write("not ok %s %s", result.tests_run, name)
 
@@ -96,8 +126,8 @@ class TAPResult(ResultEvents):
         pass
 
     def post_tests(self, job):
-        if self.output not in (None, '-'):
-            self.output.close()
+        for open_file in self.__open_files:
+            open_file.close()
 
 
 class TAP(CLI):
@@ -119,6 +149,12 @@ class TAP(CLI):
                                        help="Enable TAP result output and "
                                        "write it to FILE. Use '-' to redirect "
                                        "to the standard output.")
+
+        cmd_parser.output.add_argument('--tap-job-result', default="on",
+                                       choices=("on", "off"), help="Enables "
+                                       "default TAP result in the job results"
+                                       " directory. File will be named "
+                                       "\"results.tap\".")
 
     def run(self, args):
         pass

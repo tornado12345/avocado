@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import errno
+import importlib
 import os
 import sys
 
@@ -12,6 +13,7 @@ sys.path.insert(0, root_path)
 
 from avocado.utils import path
 from avocado.utils import process
+from avocado.utils import genio
 
 # Flag that tells if the docs are being built on readthedocs.org
 ON_RTD = os.environ.get('READTHEDOCS', None) == 'True'
@@ -23,7 +25,7 @@ api_source_dir = os.path.join(root_path, 'avocado')
 base_api_output_dir = os.path.join(root_path, 'docs', 'source', 'api')
 try:
     apidoc = path.find_command('sphinx-apidoc')
-    apidoc_template = apidoc + " -o %(output_dir)s " + api_source_dir + " %(exclude_dirs)s"
+    apidoc_template = apidoc + " -o %(output_dir)s %(api_source_dir)s %(exclude_dirs)s"
 except path.CmdNotFoundError:
     apidoc = False
 
@@ -39,11 +41,10 @@ API_SECTIONS = {"Test APIs": (None,
                               ("modules.rst", )),
 
                 "Utilities APIs": ("utils",
-                                   "This is a set of utility APIs that Avocado "
-                                   "provides as added value to test writers.",
+                                   genio.read_file("api_utils_heading"),
                                    "utils",
                                    ("core", "plugins"),
-                                   ("avocado.rst", "modules.rst"),),
+                                   ("avocado.rst", "modules.rst")),
 
                 "Internal (Core) APIs": ("core",
                                          "Internal APIs that may be of interest to "
@@ -93,14 +94,52 @@ for (section, params) in API_SECTIONS.iteritems():
             if not details.errno == errno.EEXIST:
                 raise
     else:
-        main_rst_content = open(main_rst).readlines()
+        with open(main_rst) as main_rst_file:
+            main_rst_content = main_rst_file.readlines()
 
     new_main_rst_content = [section, "=" * len(section), "",
                             params[1], ""]
-    new_main_rst = open(main_rst, "w")
-    new_main_rst.write("\n".join(new_main_rst_content))
-    new_main_rst.write("".join(main_rst_content[2:]))
-    new_main_rst.close()
+    with open(main_rst, "w") as new_main_rst:
+        new_main_rst.write("\n".join(new_main_rst_content))
+        new_main_rst.write("".join(main_rst_content[2:]))
+
+# Generate optional-plugins
+optional_plugins_path = os.path.join(root_path, "optional_plugins")
+api_optional_plugins_path = os.path.join(base_api_output_dir,
+                                         "optional-plugins")
+if not os.path.exists(api_optional_plugins_path):
+    os.makedirs(api_optional_plugins_path)
+with open(os.path.join(api_optional_plugins_path, "index.rst"),
+          'w') as optional_plugins_toc:
+    optional_plugins_toc.write(""".. index file for optional plugins API
+
+====================
+Optional Plugins API
+====================
+
+The following pages document the private APIs of optional Avocado plugins.
+
+.. toctree::
+   :maxdepth: 1
+
+    """)
+    for path in next(os.walk(optional_plugins_path))[1]:
+        name = "avocado_%s" % os.path.basename(path)
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            continue
+
+        path = os.path.join(optional_plugins_path, path, name)
+        if not os.path.exists(path):
+            continue
+        output_dir = os.path.join(api_optional_plugins_path, name)
+        params = {"api_source_dir": path, "output_dir": output_dir,
+                  "exclude_dirs": ""}
+        process.run(apidoc_template % params)
+        # Remove the unnecessary generated files
+        os.unlink(os.path.join(output_dir, "modules.rst"))
+        optional_plugins_toc.write("\n   %s" % os.path.join(name, name))
 
 extensions = ['sphinx.ext.autodoc',
               'sphinx.ext.intersphinx',
@@ -109,10 +148,10 @@ extensions = ['sphinx.ext.autodoc',
 
 master_doc = 'index'
 project = u'Avocado'
-copyright = u'2014-2015, Red Hat'
+copyright = u'2014-2015, Red Hat'   # pylint: disable=W0622
 
 version_file = os.path.join(root_path, 'VERSION')
-VERSION = open(version_file, 'r').read().strip()
+VERSION = genio.read_file(version_file).strip()
 version = VERSION
 release = VERSION
 
@@ -142,13 +181,6 @@ texinfo_documents = [
      'Miscellaneous'),
 ]
 
-# Older python-sphinx cannot handle newer inventory files (objects.inv)
-# this is not failproof, as there can be newer python-sphinx on older
-# Python, but it seems to be good enough.
-if sys.version_info[0] == 2 and sys.version_info[1] == 6:
-    intersphinx_python_url = 'http://docs.python.org/2.6/'
-else:
-    intersphinx_python_url = 'http://docs.python.org/'
-intersphinx_mapping = {intersphinx_python_url: None}
+intersphinx_mapping = {'http://docs.python.org/': None}
 
 autoclass_content = 'both'

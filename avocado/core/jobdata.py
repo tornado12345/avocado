@@ -18,34 +18,36 @@ Record/retrieve job information
 
 import ast
 import glob
+import json
 import os
-import pickle
 
+from . import varianter
+from .output import LOG_UI, LOG_JOB
 from .settings import settings
 from ..utils.path import init_dir
 
 
 JOB_DATA_DIR = 'jobdata'
-JOB_DATA_FALLBACK_DIR = 'replay'
 CONFIG_FILENAME = 'config'
 TEST_REFERENCES_FILENAME = 'test_references'
-TEST_REFERENCES_FILENAME_LEGACY = 'urls'
-MUX_FILENAME = 'multiplex'
+VARIANTS_FILENAME = 'variants.json'
 PWD_FILENAME = 'pwd'
-ARGS_FILENAME = 'args'
+ARGS_FILENAME = 'args.json'
 CMDLINE_FILENAME = 'cmdline'
 
 
-def record(args, logdir, mux, references=None, cmdline=None):
+def record(args, logdir, variants, references=None, cmdline=None):
     """
     Records all required job information.
     """
+    def json_bad_variants_obj(item):
+        for log in [LOG_UI, LOG_JOB]:
+            log.warning("jobdata.variants: Unable to serialize '%s'", item)
+        return str(item)
     base_dir = init_dir(logdir, JOB_DATA_DIR)
     path_cfg = os.path.join(base_dir, CONFIG_FILENAME)
     path_references = os.path.join(base_dir, TEST_REFERENCES_FILENAME)
-    path_references_legacy = os.path.join(base_dir,
-                                          TEST_REFERENCES_FILENAME_LEGACY)
-    path_mux = os.path.join(base_dir, MUX_FILENAME)
+    path_variants = os.path.join(base_dir, VARIANTS_FILENAME)
     path_pwd = os.path.join(base_dir, PWD_FILENAME)
     path_args = os.path.join(base_dir, ARGS_FILENAME)
     path_cmdline = os.path.join(base_dir, CMDLINE_FILENAME)
@@ -53,30 +55,39 @@ def record(args, logdir, mux, references=None, cmdline=None):
     if references:
         with open(path_references, 'w') as references_file:
             references_file.write('%s' % references)
-        os.symlink(TEST_REFERENCES_FILENAME, path_references_legacy)
+            references_file.flush()
+            os.fsync(references_file)
 
     with open(path_cfg, 'w') as config_file:
         settings.config.write(config_file)
+        config_file.flush()
+        os.fsync(config_file)
 
-    with open(path_mux, 'w') as mux_file:
-        pickle.dump(mux, mux_file, pickle.HIGHEST_PROTOCOL)
+    with open(path_variants, 'w') as variants_file:
+        json.dump(variants.dump(), variants_file, default=json_bad_variants_obj)
+        variants_file.flush()
+        os.fsync(variants_file)
 
     with open(path_pwd, 'w') as pwd_file:
         pwd_file.write('%s' % os.getcwd())
+        pwd_file.flush()
+        os.fsync(pwd_file)
 
     with open(path_args, 'w') as args_file:
-        pickle.dump(args.__dict__, args_file, pickle.HIGHEST_PROTOCOL)
+        json.dump(args.__dict__, args_file, default=lambda x: None)
+        args_file.flush()
+        os.fsync(args_file)
 
     with open(path_cmdline, 'w') as cmdline_file:
         cmdline_file.write('%s' % cmdline)
+        cmdline_file.flush()
+        os.fsync(cmdline_file)
 
 
 def _retrieve(resultsdir, resource):
     path = os.path.join(resultsdir, JOB_DATA_DIR, resource)
     if not os.path.exists(path):
-        path = os.path.join(resultsdir, JOB_DATA_FALLBACK_DIR, resource)
-        if not os.path.exists(path):
-            return None
+        return None
     return path
 
 
@@ -97,23 +108,19 @@ def retrieve_references(resultsdir):
     """
     recorded_references = _retrieve(resultsdir, TEST_REFERENCES_FILENAME)
     if recorded_references is None:
-        recorded_references = _retrieve(resultsdir,
-                                        TEST_REFERENCES_FILENAME_LEGACY)
-    if recorded_references is None:
         return None
     with open(recorded_references, 'r') as references_file:
         return ast.literal_eval(references_file.read())
 
 
-def retrieve_mux(resultsdir):
+def retrieve_variants(resultsdir):
     """
-    Retrieves the job Mux object from the results directory.
+    Retrieves the job variants object from the results directory.
     """
-    recorded_mux = _retrieve(resultsdir, MUX_FILENAME)
-    if recorded_mux is None:
-        return None
-    with open(recorded_mux, 'r') as mux_file:
-        return pickle.load(mux_file)
+    recorded_variants = _retrieve(resultsdir, VARIANTS_FILENAME)
+    if recorded_variants:
+        with open(recorded_variants, 'r') as variants_file:
+            return varianter.Varianter(state=json.load(variants_file))
 
 
 def retrieve_args(resultsdir):
@@ -121,10 +128,9 @@ def retrieve_args(resultsdir):
     Retrieves the job args from the results directory.
     """
     recorded_args = _retrieve(resultsdir, ARGS_FILENAME)
-    if recorded_args is None:
-        return None
-    with open(recorded_args, 'r') as args_file:
-        return pickle.load(args_file)
+    if recorded_args:
+        with open(recorded_args, 'r') as args_file:
+            return json.load(args_file)
 
 
 def retrieve_config(resultsdir):
@@ -143,6 +149,18 @@ def retrieve_cmdline(resultsdir):
     """
     recorded_cmdline = _retrieve(resultsdir, CMDLINE_FILENAME)
     if recorded_cmdline is None:
+        # Attempt to restore cmdline from log
+        try:
+            with open(os.path.join(resultsdir, "job.log"), "r") as log:
+                import re
+                cmd = re.search(r"# \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3} "
+                                r"\w{17}\w\d{4} INFO | Command line: (.*)",
+                                log.read())
+                if cmd:
+                    import shlex
+                    return shlex.split(cmd.group(1))
+        except IOError:
+            pass
         return None
     with open(recorded_cmdline, 'r') as cmdline_file:
         return ast.literal_eval(cmdline_file.read())

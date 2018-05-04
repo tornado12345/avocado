@@ -63,42 +63,57 @@ def modules_imported_as(module):
     return result
 
 
-#: Gets the tag value from a string. Used to tag a test class in various ways
-AVOCADO_DOCSTRING_TAG_RE = re.compile(r'\s*:avocado:\s*(\S+)\s*')
+#: Gets the docstring directive value from a string. Used to tweak
+#: test behavior in various ways
+DOCSTRING_DIRECTIVE_RE_RAW = r'\s*:avocado:[ \t]+([a-zA-Z0-9]+?[a-zA-Z0-9_:,\=]*)\s*$'
+DOCSTRING_DIRECTIVE_RE = re.compile(DOCSTRING_DIRECTIVE_RE_RAW)
 
 
-def get_docstring_tag(docstring):
+def get_docstring_directives(docstring):
     """
-    Returns the value of the avocado custom tag inside a docstring
+    Returns the values of the avocado docstring directives
 
     :param docstring: the complete text used as documentation
     :type docstring: str
+
+    :rtype: builtin.list
     """
+    result = []
     if docstring is None:
-        return None
-    result = AVOCADO_DOCSTRING_TAG_RE.search(docstring)
-    if result is not None:
-        return result.groups()[0]
+        return result
+    for line in docstring.splitlines():
+        try:
+            match = DOCSTRING_DIRECTIVE_RE.match(line)
+            if match:
+                result.append(match.groups()[0])
+        except TypeError:
+            pass
+    return result
 
 
-def is_docstring_tag_enable(docstring):
+def check_docstring_directive(docstring, directive):
     """
-    Checks if there's an avocado tag that enables its class as a Test class
+    Checks if there's a given directive in a given docstring
 
     :rtype: bool
     """
-    result = get_docstring_tag(docstring)
-    return result == 'enable'
+    return directive in get_docstring_directives(docstring)
 
 
-def is_docstring_tag_disable(docstring):
+def get_docstring_directives_tags(docstring):
     """
-    Checks if there's an avocado tag that disables its class as a Test class
+    Returns the test categories based on a `:avocado: tags=category`
+    docstring
 
-    :rtype: bool
+    :rtype: set
     """
-    result = get_docstring_tag(docstring)
-    return result == 'disable'
+    tags = []
+    for item in get_docstring_directives(docstring):
+        if item.startswith('tags='):
+            _, comma_tags = item.split('tags=', 1)
+            tags.extend([tag for tag in comma_tags.split(',') if tag])
+
+    return set(tags)
 
 
 def find_class_and_methods(path, method_pattern=None, base_class=None):
@@ -119,8 +134,8 @@ def find_class_and_methods(path, method_pattern=None, base_class=None):
         return base_class_name in base_ids
 
     result = {}
-    mod = ast.parse(open(path).read(), path)
-    modules = modules_imported_as(mod)
+    with open(path) as source_file:
+        mod = ast.parse(source_file.read(), path)
 
     for statement in mod.body:
         if isinstance(statement, ast.ClassDef):

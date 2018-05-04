@@ -14,7 +14,7 @@ class SyncTest(Test):
     """
     Execute the synctest test suite.
 
-    :param sync_tarball: path to the tarball relative to deps dir.
+    :param sync_tarball: path to the tarball relative to a data directory
     :param default_symbols: whether to build with debug symbols (bool)
     :param sync_length: how many data should by used in sync test
     :param sync_loop: how many writes should be executed in sync test
@@ -26,21 +26,25 @@ class SyncTest(Test):
         """
         self.cwd = os.getcwd()
         sync_tarball = self.params.get('sync_tarball', '*', 'synctest.tar.bz2')
-        tarball_path = os.path.join(self.datadir, sync_tarball)
-        archive.extract(tarball_path, self.srcdir)
-        self.srcdir = os.path.join(self.srcdir, 'synctest')
+        tarball_path = self.get_data(sync_tarball)
+        if tarball_path is None:
+            self.cancel('Test is missing data file %s' % tarball_path)
+        archive.extract(tarball_path, self.workdir)
+        srcdir = os.path.join(self.workdir, 'synctest')
+        os.chdir(srcdir)
         if self.params.get('debug_symbols', default=True):
-            build.make(self.srcdir,
+            build.make(srcdir,
                        env={'CFLAGS': '-g -O0'},
-                       extra_args='synctest')
+                       extra_args='synctest',
+                       allow_output_check='none')
         else:
-            build.make(self.srcdir)
+            build.make(srcdir,
+                       allow_output_check='none')
 
     def test(self):
         """
         Execute synctest with the appropriate params.
         """
-        os.chdir(self.srcdir)
         path = os.path.join(os.getcwd(), 'synctest')
         cmd = ('%s %s %s' %
                (path, self.params.get('sync_length', default=100),

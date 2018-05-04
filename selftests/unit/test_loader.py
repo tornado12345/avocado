@@ -1,16 +1,12 @@
+import os
 import shutil
 import stat
 import sys
 import multiprocessing
 import tempfile
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core import test
-from avocado.core import exceptions
 from avocado.core import loader
 from avocado.utils import script
 
@@ -44,6 +40,61 @@ class PassTest(Test):
     :avocado: disable
     '''
     def test(self):
+        pass
+
+if __name__ == "__main__":
+    main()
+"""
+
+AVOCADO_TEST_TAGS = """#!/usr/bin/env python
+from avocado import Test
+from avocado import main
+
+import time
+
+class DisabledTest(Test):
+    '''
+    :avocado: disable
+    :avocado: tags=fast,net
+    '''
+    def test_disabled(self):
+        pass
+
+class FastTest(Test):
+    '''
+    :avocado: tags=fast
+    '''
+    def test_fast(self):
+        '''
+        :avocado: tags=net
+        '''
+        pass
+
+    def test_fast_other(self):
+        '''
+        :avocado: tags=net
+        '''
+        pass
+
+class SlowTest(Test):
+    '''
+    :avocado: tags=slow,disk
+    '''
+    def test_slow(self):
+        time.sleep(1)
+
+class SlowUnsafeTest(Test):
+    '''
+    :avocado: tags=slow,disk,unsafe
+    '''
+    def test_slow_unsafe(self):
+        time.sleep(1)
+
+class SafeTest(Test):
+    '''
+    :avocado: tags=safe
+    '''
+    def test_safe(self):
         pass
 
 if __name__ == "__main__":
@@ -136,6 +187,65 @@ class Second(avocado.Test):
         pass
 """
 
+KEEP_METHODS_ORDER = '''
+from avocado import Test
+
+class MyClass(Test):
+    def test2(self):
+        pass
+
+    def testA(self):
+        pass
+
+    def test1(self):
+        pass
+
+    def testZZZ(self):
+        pass
+
+    def test(self):
+        pass
+'''
+
+RECURSIVE_DISCOVERY_TEST1 = """
+from avocado import Test
+
+class BaseClass(Test):
+    def test_basic(self):
+        pass
+
+class FirstChild(BaseClass):
+    def test_first_child(self):
+        pass
+
+class SecondChild(FirstChild):
+    '''
+    :avocado: disable
+    '''
+    def test_second_child(self):
+        pass
+"""
+
+RECURSIVE_DISCOVERY_TEST2 = """
+from avocado import Test
+from recursive_discovery_test1 import SecondChild
+
+class ThirdChild(Test, SecondChild):
+    '''
+    :avocado: recursive
+    '''
+    def test_third_child(self):
+        pass
+"""
+
+PYTHON_UNITTEST = """#!/usr/bin/env python
+from unittest import TestCase
+
+class SampleTest(TestCase):
+    def test(self):
+        pass
+"""
+
 
 class LoaderTest(unittest.TestCase):
 
@@ -151,15 +261,13 @@ class LoaderTest(unittest.TestCase):
         test_class, test_parameters = (
             self.loader.discover(simple_test.path, loader.ALL)[0])
         self.assertTrue(test_class == test.SimpleTest, test_class)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
+        test_parameters['name'] = test.TestID(0, test_parameters['name'])
         test_parameters['base_logdir'] = self.tmpdir
         tc = test_class(**test_parameters)
         tc.run_avocado()
-        # Load with params
-        simple_with_params = simple_test.path + " 'foo bar' --baz"
-        suite = self.loader.discover(simple_with_params, loader.ALL)
+        suite = self.loader.discover(simple_test.path, loader.ALL)
         self.assertEqual(len(suite), 1)
-        self.assertEqual(suite[0][1]["name"], simple_with_params)
+        self.assertEqual(suite[0][1]["name"], simple_test.path)
         simple_test.remove()
 
     def test_load_simple_not_exec(self):
@@ -167,13 +275,8 @@ class LoaderTest(unittest.TestCase):
                                              'avocado_loader_unittest',
                                              mode=DEFAULT_NON_EXEC_MODE)
         simple_test.save()
-        test_class, test_parameters = (
-            self.loader.discover(simple_test.path, loader.ALL)[0])
-        self.assertTrue(test_class == test.NotATest, test_class)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
-        test_parameters['base_logdir'] = self.tmpdir
-        tc = test_class(**test_parameters)
-        self.assertRaises(exceptions.NotATestError, tc.test)
+        test_class, _ = self.loader.discover(simple_test.path, loader.ALL)[0]
+        self.assertTrue(test_class == loader.NotATest, test_class)
         simple_test.remove()
 
     def test_load_pass(self):
@@ -181,8 +284,8 @@ class LoaderTest(unittest.TestCase):
                                                    AVOCADO_TEST_OK,
                                                    'avocado_loader_unittest')
         avocado_pass_test.save()
-        test_class, test_parameters = (
-            self.loader.discover(avocado_pass_test.path, loader.ALL)[0])
+        test_class, _ = self.loader.discover(avocado_pass_test.path,
+                                             loader.ALL)[0]
         self.assertTrue(test_class == 'PassTest', test_class)
         avocado_pass_test.remove()
 
@@ -192,13 +295,9 @@ class LoaderTest(unittest.TestCase):
                                                     'avocado_loader_unittest',
                                                     mode=DEFAULT_NON_EXEC_MODE)
         avocado_not_a_test.save()
-        test_class, test_parameters = (
-            self.loader.discover(avocado_not_a_test.path, loader.ALL)[0])
-        self.assertTrue(test_class == test.NotATest, test_class)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
-        test_parameters['base_logdir'] = self.tmpdir
-        tc = test_class(**test_parameters)
-        self.assertRaises(exceptions.NotATestError, tc.test)
+        test_class, _ = self.loader.discover(avocado_not_a_test.path,
+                                             loader.ALL)[0]
+        self.assertTrue(test_class == loader.NotATest, test_class)
         avocado_not_a_test.remove()
 
     def test_load_not_a_test_exec(self):
@@ -208,7 +307,7 @@ class LoaderTest(unittest.TestCase):
         test_class, test_parameters = (
             self.loader.discover(avocado_not_a_test.path, loader.ALL)[0])
         self.assertTrue(test_class == test.SimpleTest, test_class)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
+        test_parameters['name'] = test.TestID(0, test_parameters['name'])
         test_parameters['base_logdir'] = self.tmpdir
         tc = test_class(**test_parameters)
         # The test can't be executed (no shebang), raising an OSError
@@ -224,7 +323,7 @@ class LoaderTest(unittest.TestCase):
         test_class, test_parameters = (
             self.loader.discover(avocado_simple_test.path, loader.ALL)[0])
         self.assertTrue(test_class == test.SimpleTest)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
+        test_parameters['name'] = test.TestID(0, test_parameters['name'])
         test_parameters['base_logdir'] = self.tmpdir
         tc = test_class(**test_parameters)
         tc.run_avocado()
@@ -236,13 +335,9 @@ class LoaderTest(unittest.TestCase):
                                                      'avocado_loader_unittest',
                                                      mode=DEFAULT_NON_EXEC_MODE)
         avocado_simple_test.save()
-        test_class, test_parameters = (
-            self.loader.discover(avocado_simple_test.path, loader.ALL)[0])
-        self.assertTrue(test_class == test.NotATest)
-        test_parameters['name'] = test.TestName(0, test_parameters['name'])
-        test_parameters['base_logdir'] = self.tmpdir
-        tc = test_class(**test_parameters)
-        self.assertRaises(exceptions.NotATestError, tc.test)
+        test_class, _ = self.loader.discover(avocado_simple_test.path,
+                                             loader.ALL)[0]
+        self.assertTrue(test_class == loader.NotATest)
         avocado_simple_test.remove()
 
     def test_multiple_methods(self):
@@ -292,7 +387,7 @@ class LoaderTest(unittest.TestCase):
                                                    AVOCADO_FOREIGN_TAGGED_ENABLE,
                                                    'avocado_loader_unittest')
         avocado_pass_test.save()
-        test_class, test_parameters = (
+        test_class, _ = (
             self.loader.discover(avocado_pass_test.path, loader.ALL)[0])
         self.assertTrue(test_class == 'First', test_class)
         avocado_pass_test.remove()
@@ -303,9 +398,9 @@ class LoaderTest(unittest.TestCase):
                                                    'avocado_loader_unittest',
                                                    DEFAULT_NON_EXEC_MODE)
         avocado_pass_test.save()
-        test_class, test_parameters = (
+        test_class, _ = (
             self.loader.discover(avocado_pass_test.path, loader.ALL)[0])
-        self.assertTrue(test_class == test.NotATest)
+        self.assertTrue(test_class == loader.NotATest)
         avocado_pass_test.remove()
 
     def test_load_tagged_nested(self):
@@ -314,10 +409,9 @@ class LoaderTest(unittest.TestCase):
                                                      'avocado_loader_unittest',
                                                      DEFAULT_NON_EXEC_MODE)
         avocado_nested_test.save()
-        test_class, test_parameters = (
-            self.loader.discover(avocado_nested_test.path, loader.ALL)[0])
-        results = self.loader.discover(avocado_nested_test.path, loader.ALL)
-        self.assertTrue(test_class == test.NotATest)
+        test_class, _ = self.loader.discover(avocado_nested_test.path,
+                                             loader.ALL)[0]
+        self.assertTrue(test_class == loader.NotATest)
         avocado_nested_test.remove()
 
     def test_load_multiple_imports(self):
@@ -326,10 +420,145 @@ class LoaderTest(unittest.TestCase):
             AVOCADO_TEST_MULTIPLE_IMPORTS,
             'avocado_loader_unittest')
         avocado_multiple_imp_test.save()
-        test_class, test_parameters = (
+        test_class, _ = (
             self.loader.discover(avocado_multiple_imp_test.path, loader.ALL)[0])
         self.assertTrue(test_class == 'Second', test_class)
         avocado_multiple_imp_test.remove()
+
+    def test_load_tags(self):
+        avocado_test_tags = script.TemporaryScript('tags.py',
+                                                   AVOCADO_TEST_TAGS,
+                                                   'avocado_loader_unittest',
+                                                   DEFAULT_NON_EXEC_MODE)
+        tags_map = {'FastTest.test_fast': set(['fast', 'net']),
+                    'FastTest.test_fast_other': set(['fast', 'net']),
+                    'SlowTest.test_slow': set(['slow', 'disk']),
+                    'SlowUnsafeTest.test_slow_unsafe': set(['slow',
+                                                            'disk',
+                                                            'unsafe']),
+                    'SafeTest.test_safe': set(['safe'])}
+        with avocado_test_tags:
+            for _, info in self.loader.discover(avocado_test_tags.path,
+                                                loader.ALL):
+                name = info['name'].split(':', 1)[1]
+                self.assertEqual(info['tags'], tags_map[name])
+                del(tags_map[name])
+        self.assertEqual(len(tags_map), 0)
+
+    def test_filter_tags_include_empty(self):
+        avocado_pass_test = script.TemporaryScript('passtest.py',
+                                                   AVOCADO_TEST_OK,
+                                                   'avocado_loader_unittest',
+                                                   DEFAULT_NON_EXEC_MODE)
+        with avocado_pass_test as test:
+            test_suite = self.loader.discover(test.path, loader.ALL)
+            self.assertEqual([], loader.filter_test_tags(test_suite, []))
+            self.assertEqual(test_suite,
+                             loader.filter_test_tags(test_suite, [], True))
+
+    def test_filter_tags(self):
+        avocado_test_tags = script.TemporaryScript('tags.py',
+                                                   AVOCADO_TEST_TAGS,
+                                                   'avocado_loader_unittest',
+                                                   DEFAULT_NON_EXEC_MODE)
+        with avocado_test_tags as test:
+            test_suite = self.loader.discover(test.path, loader.ALL)
+            self.assertEqual(len(test_suite), 5)
+            self.assertEqual(test_suite[0][0], 'FastTest')
+            self.assertEqual(test_suite[0][1]['methodName'], 'test_fast')
+            self.assertEqual(test_suite[1][0], 'FastTest')
+            self.assertEqual(test_suite[1][1]['methodName'], 'test_fast_other')
+            self.assertEqual(test_suite[2][0], 'SlowTest')
+            self.assertEqual(test_suite[2][1]['methodName'], 'test_slow')
+            self.assertEqual(test_suite[3][0], 'SlowUnsafeTest')
+            self.assertEqual(test_suite[3][1]['methodName'], 'test_slow_unsafe')
+            self.assertEqual(test_suite[4][0], 'SafeTest')
+            self.assertEqual(test_suite[4][1]['methodName'], 'test_safe')
+            filtered = loader.filter_test_tags(test_suite, ['fast,net'])
+            self.assertEqual(len(filtered), 2)
+            self.assertEqual(filtered[0][0], 'FastTest')
+            self.assertEqual(filtered[0][1]['methodName'], 'test_fast')
+            self.assertEqual(filtered[1][0], 'FastTest')
+            self.assertEqual(filtered[1][1]['methodName'], 'test_fast_other')
+            filtered = loader.filter_test_tags(test_suite,
+                                               ['fast,net',
+                                                'slow,disk,unsafe'])
+            self.assertEqual(len(filtered), 3)
+            self.assertEqual(filtered[0][0], 'FastTest')
+            self.assertEqual(filtered[0][1]['methodName'], 'test_fast')
+            self.assertEqual(filtered[1][0], 'FastTest')
+            self.assertEqual(filtered[1][1]['methodName'], 'test_fast_other')
+            self.assertEqual(filtered[2][0], 'SlowUnsafeTest')
+            self.assertEqual(filtered[2][1]['methodName'], 'test_slow_unsafe')
+            filtered = loader.filter_test_tags(test_suite,
+                                               ['fast,net',
+                                                'slow,disk'])
+            self.assertEqual(len(filtered), 4)
+            self.assertEqual(filtered[0][0], 'FastTest')
+            self.assertEqual(filtered[0][1]['methodName'], 'test_fast')
+            self.assertEqual(filtered[1][0], 'FastTest')
+            self.assertEqual(filtered[1][1]['methodName'], 'test_fast_other')
+            self.assertEqual(filtered[2][0], 'SlowTest')
+            self.assertEqual(filtered[2][1]['methodName'], 'test_slow')
+            self.assertEqual(filtered[3][0], 'SlowUnsafeTest')
+            self.assertEqual(filtered[3][1]['methodName'], 'test_slow_unsafe')
+            filtered = loader.filter_test_tags(test_suite,
+                                               ['-fast,-slow'])
+            self.assertEqual(len(filtered), 1)
+            self.assertEqual(filtered[0][0], 'SafeTest')
+            self.assertEqual(filtered[0][1]['methodName'], 'test_safe')
+            filtered = loader.filter_test_tags(test_suite,
+                                               ['-fast,-slow,-safe'])
+            self.assertEqual(len(filtered), 0)
+            filtered = loader.filter_test_tags(test_suite,
+                                               ['-fast,-slow,-safe',
+                                                'does,not,exist'])
+            self.assertEqual(len(filtered), 0)
+
+    def test_methods_order(self):
+        avocado_keep_methods_order = script.TemporaryScript(
+            'keepmethodsorder.py',
+            KEEP_METHODS_ORDER)
+        avocado_keep_methods_order.save()
+        expected_order = ['test2', 'testA', 'test1', 'testZZZ', 'test']
+        tests = self.loader._find_avocado_tests(avocado_keep_methods_order.path)[0]
+        methods = [method[0] for method in tests['MyClass']]
+        self.assertEqual(expected_order, methods)
+        avocado_keep_methods_order.remove()
+
+    def test_recursive_discovery(self):
+        avocado_recursive_discovery_test1 = script.TemporaryScript(
+            'recursive_discovery_test1.py',
+            RECURSIVE_DISCOVERY_TEST1)
+        avocado_recursive_discovery_test1.save()
+        avocado_recursive_discovery_test2 = script.TemporaryScript(
+            'recursive_discovery_test2.py',
+            RECURSIVE_DISCOVERY_TEST2)
+        avocado_recursive_discovery_test2.save()
+
+        sys.path.append(os.path.dirname(avocado_recursive_discovery_test1.path))
+        tests = self.loader._find_avocado_tests(avocado_recursive_discovery_test2.path)[0]
+        expected = {'ThirdChild': [('test_third_child', set([])),
+                                   ('test_second_child', set([])),
+                                   ('test_first_child', set([])),
+                                   ('test_basic', set([]))]}
+        self.assertEqual(expected, tests)
+
+    def test_python_unittest(self):
+        disabled_test = script.TemporaryScript("disabled.py",
+                                               AVOCADO_TEST_OK_DISABLED,
+                                               mode=DEFAULT_NON_EXEC_MODE)
+        python_unittest = script.TemporaryScript("python_unittest.py",
+                                                 PYTHON_UNITTEST)
+        disabled_test.save()
+        python_unittest.save()
+        tests = self.loader.discover(disabled_test.path)
+        self.assertEqual(tests, [])
+        tests = self.loader.discover(python_unittest.path)
+        exp = [(test.PythonUnittest,
+                {"name": "python_unittest.SampleTest.test",
+                 "test_dir": os.path.dirname(python_unittest.path)})]
+        self.assertEqual(tests, exp)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)

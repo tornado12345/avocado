@@ -30,15 +30,16 @@ except:
 def handle_exception(*exc_info):
     # Print traceback if AVOCADO_LOG_DEBUG environment variable is set
     msg = "Avocado crashed:\n" + "".join(traceback.format_exception(*exc_info))
+    msg += "\n"
     if os.environ.get("AVOCADO_LOG_DEBUG"):
-        os.write(2, msg + '\n')
+        os.write(2, msg.encode('utf-8'))
     # Store traceback in data_dir or TMPDIR
     crash_dir = None
     prefix = "avocado-traceback-"
     try:
         import time
         prefix += time.strftime("%F_%T") + "-"
-        from avocado.core import data_dir
+        from avocado.core import data_dir    # pylint: disable=E0611
         _crash_dir = os.path.join(data_dir.get_data_dir(), "crashes")
         os.makedirs(_crash_dir)
         crash_dir = _crash_dir
@@ -48,9 +49,9 @@ def handle_exception(*exc_info):
     os.write(tmp, msg.encode('utf-8'))
     os.close(tmp)
     # Print friendly message in console-like output
-    msg = ("Avocado crashed unexpectedly: %s\nYou can find details in %s"
+    msg = ("Avocado crashed unexpectedly: %s\nYou can find details in %s\n"
            % (exc_info[1], name))
-    os.write(2, msg + '\n')
+    os.write(2, msg.encode('utf-8'))
     # This exit code is replicated from avocado/core/exit_codes.py and not
     # imported because we are dealing with import failures
     sys.exit(-1)
@@ -58,20 +59,8 @@ def handle_exception(*exc_info):
 
 if __name__ == '__main__':
     sys.excepthook = handle_exception
+    from avocado.core.app import AvocadoApp    # pylint: disable=E0611
 
-
-# simple magic for using scripts within a source tree
-basedir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if os.path.isdir(os.path.join(basedir, 'avocado')):
-    os.environ['PATH'] += ":" + os.path.join(basedir, 'scripts')
-    os.environ['PATH'] += ":" + os.path.join(basedir, 'libexec')
-    sys.path.append(basedir)
-
-
-from avocado.core.app import AvocadoApp
-
-
-if __name__ == '__main__':
     # Override tmp in case it's not set in env
     for attr in ("TMP", "TEMP", "TMPDIR"):
         if attr in os.environ:

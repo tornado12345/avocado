@@ -14,12 +14,15 @@
 
 """Extensions/plugins dispatchers."""
 
-import logging
+import copy
 import sys
 
 from stevedore import EnabledExtensionManager
 
 from .settings import settings
+from .settings import SettingsError
+from .output import LOG_UI
+from ..utils import stacktrace
 
 
 class Dispatcher(EnabledExtensionManager):
@@ -31,7 +34,9 @@ class Dispatcher(EnabledExtensionManager):
     #: Default namespace prefix for Avocado extensions
     NAMESPACE_PREFIX = 'avocado.plugins.'
 
-    def __init__(self, namespace, invoke_kwds={}):
+    def __init__(self, namespace, invoke_kwds=None):
+        if invoke_kwds is None:
+            invoke_kwds = {}
         self.load_failures = []
         super(Dispatcher, self).__init__(namespace=namespace,
                                          check_func=self.enabled,
@@ -69,8 +74,17 @@ class Dispatcher(EnabledExtensionManager):
         return "plugins.%s" % self.plugin_type()
 
     def enabled(self, extension):
-        disabled = settings.get_value('plugins', 'disable', key_type=list)
-        return self.fully_qualified_name(extension) not in disabled
+        """
+        Checks configuration for explicit mention of plugin in a disable list
+
+        If configuration section or key doesn't exist, it means no plugin
+        is disabled.
+        """
+        try:
+            disabled = settings.get_value('plugins', 'disable', key_type=list)
+            return self.fully_qualified_name(extension) not in disabled
+        except SettingsError:
+            return True
 
     def names(self):
         """
@@ -78,7 +92,7 @@ class Dispatcher(EnabledExtensionManager):
 
         This differs from :func:`stevedore.extension.ExtensionManager.names`
         in that it returns names in a predictable order, by using standard
-        :func:`order`.
+        :func:`sorted`.
         """
         return sorted(super(Dispatcher, self).names())
 
@@ -100,6 +114,61 @@ class Dispatcher(EnabledExtensionManager):
     @staticmethod
     def store_load_failure(manager, entrypoint, exception):
         manager.load_failures.append((entrypoint, exception))
+
+    def map_method_with_return(self, method_name, *args, **kwargs):
+        """
+        The same as `map_method` but additionally reports the list of returned
+        values and optionally deepcopies the passed arguments
+
+        :param method_name: Name of the method to be called on each ext
+        :param args: Arguments to be passed to all called functions
+        :param kwargs: Key-word arguments to be passed to all called functions
+                        if `"deepcopy" == True` is present in kwargs the
+                        args and kwargs are deepcopied before passing it
+                        to each called function.
+        """
+        deepcopy = kwargs.pop("deepcopy", False)
+        ret = []
+        for ext in self.extensions:
+            try:
+                if hasattr(ext.obj, method_name):
+                    method = getattr(ext.obj, method_name)
+                    if deepcopy:
+                        copied_args = [copy.deepcopy(arg) for arg in args]
+                        copied_kwargs = copy.deepcopy(kwargs)
+                        ret.append(method(*copied_args, **copied_kwargs))
+                    else:
+                        ret.append(method(*args, **kwargs))
+            except SystemExit:
+                raise
+            except KeyboardInterrupt:
+                raise
+            except:     # catch any exception pylint: disable=W0702
+                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.debug')
+                LOG_UI.error('Error running method "%s" of plugin "%s": %s',
+                             method_name, ext.name, sys.exc_info()[1])
+        return ret
+
+    def map_method(self, method_name, *args):
+        """
+        Maps method_name on each extension in case the extension has the attr
+
+        :param method_name: Name of the method to be called on each ext
+        :param args: Arguments to be passed to all called functions
+        """
+        for ext in self.extensions:
+            try:
+                if hasattr(ext.obj, method_name):
+                    method = getattr(ext.obj, method_name)
+                    method(*args)
+            except SystemExit:
+                raise
+            except KeyboardInterrupt:
+                raise
+            except:     # catch any exception pylint: disable=W0702
+                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.debug')
+                LOG_UI.error('Error running method "%s" of plugin "%s": %s',
+                             method_name, ext.name, sys.exc_info()[1])
 
 
 class CLIDispatcher(Dispatcher):
@@ -140,39 +209,11 @@ class JobPrePostDispatcher(Dispatcher):
     def __init__(self):
         super(JobPrePostDispatcher, self).__init__('avocado.plugins.job.prepost')
 
-    def map_method(self, method_name, job):
-        for ext in self.extensions:
-            try:
-                if hasattr(ext.obj, method_name):
-                    method = getattr(ext.obj, method_name)
-                    method(job)
-            except SystemExit:
-                raise
-            except KeyboardInterrupt:
-                raise
-            except:
-                job.log.error('Error running method "%s" of plugin "%s": %s',
-                              method_name, ext.name, sys.exc_info()[1])
-
 
 class ResultDispatcher(Dispatcher):
 
     def __init__(self):
         super(ResultDispatcher, self).__init__('avocado.plugins.result')
-
-    def map_method(self, method_name, result, job):
-        for ext in self.extensions:
-            try:
-                if hasattr(ext.obj, method_name):
-                    method = getattr(ext.obj, method_name)
-                    method(result, job)
-            except SystemExit:
-                raise
-            except KeyboardInterrupt:
-                raise
-            except:
-                job.log.error('Error running method "%s" of plugin "%s": %s',
-                              method_name, ext.name, sys.exc_info()[1])
 
 
 class ResultEventsDispatcher(Dispatcher):
@@ -181,18 +222,39 @@ class ResultEventsDispatcher(Dispatcher):
         super(ResultEventsDispatcher, self).__init__(
             'avocado.plugins.result_events',
             invoke_kwds={'args': args})
-        self.log = logging.getLogger("avocado.app")
 
-    def map_method(self, method_name, *args):
-        for ext in self.extensions:
-            try:
-                if hasattr(ext.obj, method_name):
-                    method = getattr(ext.obj, method_name)
-                    method(*args)
-            except SystemExit:
-                raise
-            except KeyboardInterrupt:
-                raise
-            except:
-                self.log.error('Error running method "%s" of plugin "%s": %s',
-                               method_name, ext.name, sys.exc_info()[1])
+
+class VarianterDispatcher(Dispatcher):
+
+    def __init__(self):
+        super(VarianterDispatcher, self).__init__('avocado.plugins.varianter')
+
+    def __getstate__(self):
+        """
+        Very fragile pickle which works when all Varianter plugins are
+        available on both machines.
+
+        TODO: Replace this with per-plugin-refresh-mechanism
+        """
+        return {"extensions": getattr(self, "extensions")}
+
+    def __setstate__(self, state):
+        """
+        Very fragile pickle which works when all Varianter plugins are
+        available on both machines.
+
+        TODO: Replace this with per-plugin-refresh-mechanism
+        """
+        self.__init__()
+        self.extensions = state.get("extensions")
+
+    def map_method(self, method_name, *args, **kwargs):
+        return self.map_method_with_return(method_name, deepcopy=False, *args,
+                                           **kwargs)
+
+    def map_method_copy(self, method_name, *args, **kwargs):
+        """
+        The same as map_method, but use copy.deepcopy on each passed arg
+        """
+        return self.map_method_with_return(method_name, deepcopy=True, *args,
+                                           **kwargs)

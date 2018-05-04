@@ -13,97 +13,27 @@
 # Copyright: Red Hat Inc. 2013-2014
 # Author: Lucas Meneghel Rodrigues <lmr@redhat.com>
 
-import glob
 import os
 import sys
 # pylint: disable=E0611
 
 from setuptools import setup, find_packages
 
-
-VERSION = open('VERSION', 'r').read().strip()
-VIRTUAL_ENV = hasattr(sys, 'real_prefix')
-
-
-def get_dir(system_path=None, virtual_path=None):
-    """
-    Retrieve VIRTUAL_ENV friendly path
-    :param system_path: Relative system path
-    :param virtual_path: Overrides system_path for virtual_env only
-    :return: VIRTUAL_ENV friendly path
-    """
-    if virtual_path is None:
-        virtual_path = system_path
-    if VIRTUAL_ENV:
-        if virtual_path is None:
-            virtual_path = []
-        return os.path.join(*virtual_path)
-    else:
-        if system_path is None:
-            system_path = []
-        return os.path.join(*(['/'] + system_path))
-
-
-def get_tests_dir():
-    return get_dir(['usr', 'share', 'avocado', 'tests'], ['tests'])
-
-
-def get_avocado_libexec_dir():
-    if VIRTUAL_ENV:
-        return get_dir(['libexec'])
-    elif os.path.exists('/usr/libexec'):    # RHEL-like distro
-        return get_dir(['usr', 'libexec', 'avocado'])
-    else:                                   # Debian-like distro
-        return get_dir(['usr', 'lib', 'avocado'])
-
-
-def get_data_files():
-    data_files = [(get_dir(['etc', 'avocado']), ['etc/avocado/avocado.conf'])]
-    data_files += [(get_dir(['etc', 'avocado', 'conf.d']),
-                    ['etc/avocado/conf.d/README', 'etc/avocado/conf.d/gdb.conf'])]
-    data_files += [(get_dir(['etc', 'avocado', 'sysinfo']),
-                    ['etc/avocado/sysinfo/commands', 'etc/avocado/sysinfo/files',
-                     'etc/avocado/sysinfo/profilers'])]
-    data_files += [(get_dir(['etc', 'avocado', 'scripts', 'job', 'pre.d']),
-                    ['etc/avocado/scripts/job/pre.d/README'])]
-    data_files += [(get_dir(['etc', 'avocado', 'scripts', 'job', 'post.d']),
-                    ['etc/avocado/scripts/job/post.d/README'])]
-    data_files += [(get_tests_dir(), glob.glob('examples/tests/*.py'))]
-    data_files += [(get_tests_dir(), glob.glob('examples/tests/*.sh'))]
-    for data_dir in glob.glob('examples/tests/*.data'):
-        fmt_str = '%s/*' % data_dir
-        for f in glob.glob(fmt_str):
-            data_files += [(os.path.join(get_tests_dir(),
-                                         os.path.basename(data_dir)), [f])]
-    data_files.append((get_dir(['usr', 'share', 'doc', 'avocado'], ['.']),
-                       ['man/avocado.rst', 'man/avocado-rest-client.rst']))
-    data_files += [(get_dir(['usr', 'share', 'avocado', 'wrappers'],
-                            ['wrappers']),
-                    glob.glob('examples/wrappers/*.sh'))]
-
-    data_files.append((get_avocado_libexec_dir(), glob.glob('libexec/*')))
-    return data_files
-
-
-def _get_resource_files(path, base):
-    """
-    Given a path, return all the files in there to package
-    """
-    flist = []
-    for root, _, files in sorted(os.walk(path)):
-        for name in files:
-            fullname = os.path.join(root, name)
-            flist.append(fullname[len(base):])
-    return flist
+BASE_PATH = os.path.dirname(__file__)
+with open(os.path.join(BASE_PATH, 'VERSION'), 'r') as version_file:
+    VERSION = version_file.read().strip()
 
 
 def get_long_description():
-    with open('README.rst', 'r') as req:
+    with open(os.path.join(BASE_PATH, 'README.rst'), 'r') as req:
         req_contents = req.read()
     return req_contents
 
 
 if __name__ == '__main__':
+    # Force "make develop" inside the "readthedocs.org" environment
+    if os.environ.get("READTHEDOCS") and "install" in sys.argv:
+        os.system("make develop")
     setup(name='avocado-framework',
           version=VERSION,
           description='Avocado Test Framework',
@@ -120,10 +50,15 @@ if __name__ == '__main__':
               "Operating System :: POSIX",
               "Topic :: Software Development :: Quality Assurance",
               "Topic :: Software Development :: Testing",
+              "Programming Language :: Python :: 2",
+              "Programming Language :: Python :: 2.7",
+              "Programming Language :: Python :: 3",
+              "Programming Language :: Python :: 3.4",
+              "Programming Language :: Python :: 3.5",
+              "Programming Language :: Python :: 3.6",
               ],
-          use_2to3=True,
           packages=find_packages(exclude=('selftests*',)),
-          data_files=get_data_files(),
+          include_package_data=True,
           scripts=['scripts/avocado',
                    'scripts/avocado-rest-client'],
           entry_points={
@@ -134,19 +69,17 @@ if __name__ == '__main__':
                   'xunit = avocado.plugins.xunit:XUnitCLI',
                   'json = avocado.plugins.jsonresult:JSONCLI',
                   'journal = avocado.plugins.journal:Journal',
-                  'remote = avocado.plugins.remote:Remote',
                   'replay = avocado.plugins.replay:Replay',
                   'tap = avocado.plugins.tap:TAP',
-                  'vm = avocado.plugins.vm:VM',
-                  'docker = avocado.plugins.docker:Docker',
-                  'yaml_to_mux = avocado.plugins.yaml_to_mux:YamlToMux',
                   'zip_archive = avocado.plugins.archive:ArchiveCLI',
+                  'json_variants = avocado.plugins.json_variants:JsonVariantsCLI',
                   ],
               'avocado.plugins.cli.cmd': [
                   'config = avocado.plugins.config:Config',
                   'distro = avocado.plugins.distro:Distro',
                   'exec-path = avocado.plugins.exec_path:ExecPath',
                   'multiplex = avocado.plugins.multiplex:Multiplex',
+                  'variants = avocado.plugins.variants:Variants',
                   'list = avocado.plugins.list:List',
                   'run = avocado.plugins.run:Run',
                   'sysinfo = avocado.plugins.sysinfo:SysInfo',
@@ -155,6 +88,8 @@ if __name__ == '__main__':
                   ],
               'avocado.plugins.job.prepost': [
                   'jobscripts = avocado.plugins.jobscripts:JobScripts',
+                  'teststmpdir = avocado.plugins.teststmpdir:TestsTmpDir',
+                  'human = avocado.plugins.human:HumanJob',
                   ],
               'avocado.plugins.result': [
                   'xunit = avocado.plugins.xunit:XUnitResult',
@@ -166,8 +101,11 @@ if __name__ == '__main__':
                   'tap = avocado.plugins.tap:TAPResult',
                   'journal = avocado.plugins.journal:JournalResult',
                   ],
+              'avocado.plugins.varianter': [
+                  'json_variants = avocado.plugins.json_variants:JsonVariants',
+                 ],
               },
           zip_safe=False,
           test_suite='selftests',
-          python_requires='>=2.6',
-          install_requires=['stevedore'])
+          python_requires='>=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*',
+          install_requires=['stevedore>=0.14', 'six>=1.10.0', 'setuptools'])

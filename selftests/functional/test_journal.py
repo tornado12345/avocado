@@ -1,14 +1,9 @@
 import os
-import sys
 import json
 import sqlite3
 import tempfile
 import shutil
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core import exit_codes
 from avocado.utils import process
@@ -16,16 +11,19 @@ from avocado.utils import process
 basedir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
 basedir = os.path.abspath(basedir)
 
+AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
+
 
 class JournalPluginTests(unittest.TestCase):
 
     def setUp(self):
         os.chdir(basedir)
         self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.cmd_line = ('./scripts/avocado run --job-results-dir %s --sysinfo=off --json - '
-                         '--journal examples/tests/passtest.py' % self.tmpdir)
+        self.cmd_line = ('%s run --job-results-dir %s --sysinfo=off --json - '
+                         '--journal examples/tests/passtest.py'
+                         % (AVOCADO, self.tmpdir))
         self.result = process.run(self.cmd_line, ignore_status=True)
-        data = json.loads(self.result.stdout)
+        data = json.loads(self.result.stdout_text)
         self.job_id = data['job_id']
         jfile = os.path.join(os.path.dirname(data['debuglog']), '.journal.sqlite')
         self.db = sqlite3.connect(jfile)

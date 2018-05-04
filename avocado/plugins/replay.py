@@ -14,23 +14,20 @@
 
 import argparse
 import json
-import logging
 import os
+import re
 import sys
+
+from six.moves import xrange as range
 
 from avocado.core import exit_codes
 from avocado.core import jobdata
 from avocado.core import status
 
+from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLI
 from avocado.core.settings import settings
 from avocado.core.test import ReplaySkipTest
-
-
-def ignore_call(*args, **kwargs):
-    """
-    Accepts anything and does nothing
-    """
 
 
 class Replay(CLI):
@@ -64,14 +61,11 @@ class Replay(CLI):
                                    dest='replay_ignore',
                                    type=self._valid_ignore,
                                    default=[],
-                                   help='Ignore multiplex (mux) and/or '
+                                   help='Ignore variants (variants) and/or '
                                    'configuration (config) from the '
                                    'source job')
-        replay_parser.add_argument('--replay-data-dir',
-                                   dest='replay_datadir',
-                                   default=None,
-                                   help='Load replay data from an '
-                                   'alternative location')
+        replay_parser.add_argument("--replay-resume", action="store_true",
+                                   help="Resume an interrupted job")
 
     def _valid_status(self, string):
         status_list = string.split(',')
@@ -85,7 +79,7 @@ class Replay(CLI):
         return status_list
 
     def _valid_ignore(self, string):
-        options = ['mux', 'config']
+        options = ['variants', 'config']
         ignore_list = string.split(',')
         for item in ignore_list:
             if item not in options:
@@ -101,6 +95,45 @@ class Replay(CLI):
         if config is not None:
             settings.process_config_path(config)
 
+    def _get_tests_from_tap(self, path):
+        if not os.path.exists(path):
+            return None
+        re_result = re.compile(r"(not )?ok (\d+) ([^#]*)(# (\w+).*)?")
+        re_no_tests = re.compile(r"1..(\d+)")
+        max_index = 0
+        no_tests = 0
+        _tests = {}
+        with open(path) as tapfile:
+            for line in tapfile:
+                line = line.strip()
+                if line.startswith("#"):
+                    continue
+                result = re_result.match(line)
+                if result:
+                    if result.group(1) is None:
+                        res = result.group(5)
+                        if res is None:
+                            res = "PASS"
+                    else:
+                        res = "ERROR"
+                    index = int(result.group(2))
+                    _tests[index] = {"status": res,
+                                     "test": result.group(3).rstrip()}
+                    max_index = max(max_index, index)
+                    continue
+                _no_tests = re_no_tests.match(line)
+                if _no_tests:
+                    no_tests = int(_no_tests.group(1))
+                    continue
+
+        if not (no_tests or max_index):
+            return None
+
+        # Now add _tests that were not executed
+        skipped_test = {"test": "UNKNOWN", "status": "INTERRUPTED"}
+        return [_tests[i] if i in _tests else skipped_test
+                for i in range(1, max(max_index, no_tests) + 1)]
+
     def _create_replay_map(self, resultsdir, replay_filter):
         """
         Creates a mapping to be used as filter for the replay. Given
@@ -109,14 +142,21 @@ class Replay(CLI):
         be replayed will have a correspondent None in the map.
         """
         json_results = os.path.join(resultsdir, "results.json")
-        if not os.path.exists(json_results):
-            return None
-
-        with open(json_results, 'r') as json_file:
-            results = json.loads(json_file.read())
+        if os.path.exists(json_results):
+            with open(json_results, 'r') as json_file:
+                results = json.loads(json_file.read())
+                tests = results["tests"]
+                for _ in range(results["total"] + 1 - len(tests)):
+                    tests.append({"test": "UNKNOWN", "status": "INTERRUPTED"})
+        else:
+            # get partial results from tap
+            tests = self._get_tests_from_tap(os.path.join(resultsdir,
+                                                          "results.tap"))
+            if not tests:   # tests not available, ignore replay map
+                return None
 
         replay_map = []
-        for test in results['tests']:
+        for test in tests:
             if test['status'] not in replay_filter:
                 replay_map.append(ReplaySkipTest)
             else:
@@ -128,44 +168,41 @@ class Replay(CLI):
         if getattr(args, 'replay_jobid', None) is None:
             return
 
-        log = logging.getLogger("avocado.app")
-
         err = None
-        if args.replay_teststatus and 'mux' in args.replay_ignore:
+        if args.replay_teststatus and 'variants' in args.replay_ignore:
             err = ("Option `--replay-test-status` is incompatible with "
-                   "`--replay-ignore mux`.")
+                   "`--replay-ignore variants`.")
         elif args.replay_teststatus and args.reference:
             err = ("Option --replay-test-status is incompatible with "
                    "test references given on the command line.")
-        elif args.remote_hostname:
+        elif getattr(args, "remote_hostname", False):
             err = "Currently we don't replay jobs in remote hosts."
         if err is not None:
-            log.error(err)
+            LOG_UI.error(err)
             sys.exit(exit_codes.AVOCADO_FAIL)
 
-        if args.replay_datadir is not None:
-            resultsdir = args.replay_datadir
-        else:
-            logdir = settings.get_value(section='datadir.paths',
-                                        key='logs_dir', key_type='path',
-                                        default=None)
-            try:
-                resultsdir = jobdata.get_resultsdir(logdir, args.replay_jobid)
-            except ValueError as exception:
-                log.error(exception.message)
-                sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+        base_logdir = getattr(args, 'base_logdir', None)
+        if base_logdir is None:
+            base_logdir = settings.get_value(section='datadir.paths',
+                                             key='logs_dir', key_type='path',
+                                             default=None)
+        try:
+            resultsdir = jobdata.get_resultsdir(base_logdir, args.replay_jobid)
+        except ValueError as exception:
+            LOG_UI.error(exception.message)
+            sys.exit(exit_codes.AVOCADO_FAIL)
 
         if resultsdir is None:
-            log.error("Can't find job results directory in '%s'", logdir)
-            sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+            LOG_UI.error("Can't find job results directory in '%s'", base_logdir)
+            sys.exit(exit_codes.AVOCADO_FAIL)
 
         sourcejob = jobdata.get_id(os.path.join(resultsdir, 'id'),
                                    args.replay_jobid)
         if sourcejob is None:
             msg = ("Can't find matching job id '%s' in '%s' directory."
                    % (args.replay_jobid, resultsdir))
-            log.error(msg)
-            sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+            LOG_UI.error(msg)
+            sys.exit(exit_codes.AVOCADO_FAIL)
         setattr(args, 'replay_sourcejob', sourcejob)
 
         replay_args = jobdata.retrieve_args(resultsdir)
@@ -173,60 +210,63 @@ class Replay(CLI):
                      'external_runner',
                      'external_runner_testdir',
                      'external_runner_chdir',
-                     'failfast']
+                     'failfast',
+                     'ignore_missing_references',
+                     'execution_order']
         if replay_args is None:
-            log.warn('Source job args data not found. These options will not '
-                     'be loaded in this replay job: %s', ', '.join(whitelist))
+            LOG_UI.warn('Source job args data not found. These options will '
+                        'not be loaded in this replay job: %s',
+                        ', '.join(whitelist))
         else:
             for option in whitelist:
                 optvalue = getattr(args, option, None)
                 if optvalue is not None:
-                    log.warn("Overriding the replay %s with the --%s value "
-                             "given on the command line.",
-                             option.replace('_', '-'),
-                             option.replace('_', '-'))
-                else:
+                    LOG_UI.warn("Overriding the replay %s with the --%s value "
+                                "given on the command line.",
+                                option.replace('_', '-'),
+                                option.replace('_', '-'))
+                elif option in replay_args:
                     setattr(args, option, replay_args[option])
 
-        # Keeping this for compatibility.
-        # TODO: Use replay_args['reference'] at some point in the future.
         if getattr(args, 'reference', None):
-            log.warn('Overriding the replay test references with test '
-                     'references given in the command line.')
+            LOG_UI.warn('Overriding the replay test references with test '
+                        'references given in the command line.')
         else:
             references = jobdata.retrieve_references(resultsdir)
             if references is None:
-                log.error('Source job test references data not found. Aborting.')
-                sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+                LOG_UI.error('Source job test references data not found. '
+                             'Aborting.')
+                sys.exit(exit_codes.AVOCADO_FAIL)
             else:
                 setattr(args, 'reference', references)
 
         if 'config' in args.replay_ignore:
-            log.warn("Ignoring configuration from source job with "
-                     "--replay-ignore.")
+            LOG_UI.warn("Ignoring configuration from source job with "
+                        "--replay-ignore.")
         else:
             self.load_config(resultsdir)
 
-        if 'mux' in args.replay_ignore:
-            log.warn("Ignoring multiplex from source job with "
-                     "--replay-ignore.")
+        if 'variants' in args.replay_ignore:
+            LOG_UI.warn("Ignoring variants from source job with "
+                        "--replay-ignore.")
         else:
-            mux = jobdata.retrieve_mux(resultsdir)
-            if mux is None:
-                log.error('Source job multiplex data not found. Aborting.')
-                sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+            variants = jobdata.retrieve_variants(resultsdir)
+            if variants is None:
+                LOG_UI.error('Source job variants data not found. Aborting.')
+                sys.exit(exit_codes.AVOCADO_FAIL)
             else:
-                # Ignore data manipulation. This is necessary, because
-                # we replaced the unparsed object with parsed one. There
-                # are other plugins running before/after this which might
-                # want to alter the mux object.
-                if len(args.mux.data) or args.mux.data.environment:
-                    log.warning("Using src job Mux data only, use `--replay-"
-                                "ignore mux` to override them.")
-                setattr(args, "mux", mux)
-                mux.data_merge = ignore_call
-                mux.data_inject = ignore_call
+                LOG_UI.warning("Using src job Mux data only, use "
+                               "`--replay-ignore variants` to override "
+                               "them.")
+                setattr(args, "avocado_variants", variants)
 
+        # Extend "replay_test_status" of "INTERRUPTED" when --replay-resume
+        # supplied.
+        if args.replay_resume:
+            if not args.replay_teststatus:
+                args.replay_teststatus = ["INTERRUPTED"]
+            elif "INTERRUPTED" not in args.replay_teststatus:
+                args.replay_teststatus.append("INTERRUPTED")
         if args.replay_teststatus:
             replay_map = self._create_replay_map(resultsdir,
                                                  args.replay_teststatus)
@@ -238,5 +278,5 @@ class Replay(CLI):
             if os.path.exists(pwd):
                 os.chdir(pwd)
             else:
-                log.warn("Directory used in the replay source job '%s' does "
-                         "not exist, using '.' instead", pwd)
+                LOG_UI.warn("Directory used in the replay source job '%s' does"
+                            " not exist, using '.' instead", pwd)

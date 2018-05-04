@@ -17,15 +17,111 @@
 # Authors: Yiqiao Pu <ypu@redhat.com>
 
 
+import os
 import re
 import glob
 import math
 import logging
 
 from . import process
+from . import genio
+from . import wait
+from .data_structures import DataSize
 
 
-# Returns total memory in kb
+class MemError(Exception):
+
+    """
+    called when memory operations fails
+    """
+    pass
+
+
+def get_blk_string(block):
+    """
+    Format the given block id to string
+
+    :param block: memory block id or block string.
+    :type string: like 198 or memory198
+    :return: returns string memory198 if id 198 is given
+    :rtype: string
+    """
+    if not block.startswith("memory"):
+        return "memory%s" % block
+    return block
+
+
+def _check_memory_state(block):
+    """
+    Check the given memory block is online or offline
+
+    :param block: memory block id.
+    :type string: like 198 or memory198
+    :return: 'True' if online or 'False' if offline
+    :rtype: bool
+    """
+    def _is_online():
+        path = '/sys/devices/system/memory/%s/state' % get_blk_string(block)
+        if genio.read_file(path) == 'online\n':
+            return True
+        return False
+
+    return wait.wait_for(_is_online, timeout=10, step=0.2) or False
+
+
+def check_hotplug():
+    """
+    Check kernel support for memory hotplug
+
+    :return: True if hotplug supported,  else False
+    :rtype: 'bool'
+    """
+    if glob.glob('/sys/devices/system/memory/memory*'):
+        return True
+    return False
+
+
+def is_hot_pluggable(block):
+    """
+    Check if the given memory block is hotpluggable
+
+    :param block: memory block id.
+    :type string: like 198 or memory198
+    :return: True if hotpluggable, else False
+    :rtype: 'bool'
+    """
+    path = '/sys/devices/system/memory/%s/removable' % get_blk_string(block)
+    return bool(int(genio.read_file(path)))
+
+
+def hotplug(block):
+    """
+    Online the memory for the given block id.
+
+    :param block: memory block id or or memory198
+    :type string: like 198
+    """
+    block = get_blk_string(block)
+    with open('/sys/devices/system/memory/%s/state' % block, 'w') as state_file:
+        state_file.write('online')
+    if not _check_memory_state(block):
+        raise MemError(
+            "unable to hot-plug %s block, not supported ?" % block)
+
+
+def hotunplug(block):
+    """
+    Offline the memory for the given block id.
+
+    :param block: memory block id.
+    :type string: like 198 or memory198
+    """
+    block = get_blk_string(block)
+    with open('/sys/devices/system/memory/%s/state' % block, 'w') as state_file:
+        state_file.write('offline')
+    if _check_memory_state(block):
+        raise MemError(
+            "unable to hot-unplug %s block. Device busy?" % block)
 
 
 def read_from_meminfo(key):
@@ -35,7 +131,8 @@ def read_from_meminfo(key):
     :param key: Key name, such as ``MemTotal``.
     """
     cmd_result = process.run('grep %s /proc/meminfo' % key, verbose=False)
-    meminfo = cmd_result.stdout
+    # Get text mode result for compatibility.
+    meminfo = cmd_result.stdout_text
     return int(re.search(r'\d+', meminfo).group(0))
 
 
@@ -44,6 +141,25 @@ def memtotal():
     Read ``Memtotal`` from meminfo.
     """
     return read_from_meminfo('MemTotal')
+
+
+def memtotal_sys():
+    """
+    Reports actual memory size according to online-memory
+    blocks available via "/sys"
+
+    :return: system memory in Kb as float
+    """
+    sys_mempath = '/sys/devices/system/memory'
+    no_memblocks = 0
+    for directory in os.listdir(sys_mempath):
+        if directory.startswith('memory'):
+            path = os.path.join(sys_mempath, directory, 'online')
+            if genio.read_file(path).strip() == '1':
+                no_memblocks += 1
+    path = os.path.join(sys_mempath, 'block_size_bytes')
+    block_size = int(genio.read_file(path).strip(), 16)
+    return (no_memblocks * block_size)/1024.0
 
 
 def freememtotal():
@@ -110,6 +226,16 @@ def node_size():
     return ((memtotal() * 1024) / nodes)
 
 
+def get_page_size():
+    """
+    Get linux page size for this system.
+
+    :return Kernel page size (Bytes).
+    """
+    output = process.system_output('getconf PAGESIZE')
+    return int(output)
+
+
 def get_huge_page_size():
     """
     Get size of the huge pages for this system.
@@ -145,8 +271,8 @@ def drop_caches():
     """
     process.run("sync", verbose=False)
     # We ignore failures here as this will fail on 2.6.11 kernels.
-    process.run("echo 3 > /proc/sys/vm/drop_caches", ignore_status=True,
-                verbose=False)
+    process.run("/bin/sh -c 'echo 3 > /proc/sys/vm/drop_caches'",
+                ignore_status=True, verbose=False, sudo=True)
 
 
 def read_from_vmstat(key):
@@ -158,10 +284,9 @@ def read_from_vmstat(key):
     :return: The value of the item
     :rtype: int
     """
-    vmstat = open("/proc/vmstat")
-    vmstat_info = vmstat.read()
-    vmstat.close()
-    return int(re.findall("%s\s+(\d+)" % key, vmstat_info)[0])
+    with open("/proc/vmstat") as vmstat:
+        vmstat_info = vmstat.read()
+        return int(re.findall(r"%s\s+(\d+)" % key, vmstat_info)[0])
 
 
 def read_from_smaps(pid, key):
@@ -175,15 +300,14 @@ def read_from_smaps(pid, key):
     :return: The value of the item in kb
     :rtype: int
     """
-    smaps = open("/proc/%s/smaps" % pid)
-    smaps_info = smaps.read()
-    smaps.close()
+    with open("/proc/%s/smaps" % pid) as smaps:
+        smaps_info = smaps.read()
 
-    memory_size = 0
-    for each_number in re.findall("%s:\s+(\d+)" % key, smaps_info):
-        memory_size += int(each_number)
+        memory_size = 0
+        for each_number in re.findall(r"%s:\s+(\d+)" % key, smaps_info):
+            memory_size += int(each_number)
 
-    return memory_size
+        return memory_size
 
 
 def read_from_numa_maps(pid, key):
@@ -198,16 +322,15 @@ def read_from_numa_maps(pid, key):
     :return: A dict using the address as the keys
     :rtype: dict
     """
-    numa_maps = open("/proc/%s/numa_maps" % pid)
-    numa_map_info = numa_maps.read()
-    numa_maps.close()
+    with open("/proc/%s/numa_maps" % pid) as numa_maps:
+        numa_map_info = numa_maps.read()
 
-    numa_maps_dict = {}
-    numa_pattern = r"(^[\dabcdfe]+)\s+.*%s[=:](\d+)" % key
-    for address, number in re.findall(numa_pattern, numa_map_info, re.M):
-        numa_maps_dict[address] = number
+        numa_maps_dict = {}
+        numa_pattern = r"(^[\dabcdfe]+)\s+.*%s[=:](\d+)" % key
+        for address, number in re.findall(numa_pattern, numa_map_info, re.M):
+            numa_maps_dict[address] = number
 
-    return numa_maps_dict
+        return numa_maps_dict
 
 
 def get_buddy_info(chunk_sizes, nodes="all", zones="all"):
@@ -238,43 +361,104 @@ def get_buddy_info(chunk_sizes, nodes="all", zones="all"):
     :return: A dict using the chunk_size as the keys
     :rtype: dict
     """
-    buddy_info = open("/proc/buddyinfo")
-    buddy_info_content = buddy_info.read()
-    buddy_info.close()
+    with open("/proc/buddyinfo") as buddy_info:
+        buddy_info_content = buddy_info.read()
 
-    re_buddyinfo = "Node\s+"
-    if nodes == "all":
-        re_buddyinfo += "(\d+)"
+        re_buddyinfo = r"Node\s+"
+        if nodes == "all":
+            re_buddyinfo += r"(\d+)"
+        else:
+            re_buddyinfo += "(%s)" % "|".join(nodes.split())
+
+        if not re.findall(re_buddyinfo, buddy_info_content):
+            logging.warn("Can not find Nodes %s" % nodes)
+            return None
+        re_buddyinfo += r".*?zone\s+"
+        if zones == "all":
+            re_buddyinfo += r"(\w+)"
+        else:
+            re_buddyinfo += "(%s)" % "|".join(zones.split())
+        if not re.findall(re_buddyinfo, buddy_info_content):
+            logging.warn("Can not find zones %s" % zones)
+            return None
+        re_buddyinfo += r"\s+([\s\d]+)"
+
+        buddy_list = re.findall(re_buddyinfo, buddy_info_content)
+
+        if re.findall("[<>=]", chunk_sizes) and buddy_list:
+            size_list = range(len(buddy_list[-1][-1].strip().split()))
+            chunk_sizes = [str(_) for _ in size_list if eval("%s %s" % (_,
+                                                                        chunk_sizes))]
+
+            chunk_sizes = ' '.join(chunk_sizes)
+
+        buddyinfo_dict = {}
+        for chunk_size in chunk_sizes.split():
+            buddyinfo_dict[chunk_size] = 0
+            for _, _, chunk_info in buddy_list:
+                chunk_info = chunk_info.strip().split()[int(chunk_size)]
+                buddyinfo_dict[chunk_size] += int(chunk_info)
+
+        return buddyinfo_dict
+
+
+def set_thp_value(feature, value):
+    """
+    Sets THP feature to a given value
+
+    :param feature: Thp feature to set
+    :type feature: str
+    :param value: Value to be set to feature
+    :type value: str
+    """
+    thp_path = '/sys/kernel/mm/transparent_hugepage/'
+    thp_feature_to_set = os.path.join(thp_path, feature)
+    genio.write_file_or_fail(thp_feature_to_set, value)
+
+
+def get_thp_value(feature):
+    """
+    Gets the value of the thp feature arg passed
+
+    :Param feature: Thp feature to get value
+    :type feature: str
+    """
+    thp_path = '/sys/kernel/mm/transparent_hugepage/'
+    thp_feature_to_get = os.path.join(thp_path, feature)
+    value = genio.read_file(thp_feature_to_get)
+    if feature in ("enabled", "defrag", "shmem_enabled"):
+        return (re.search(r"\[(\w+)\]", value)).group(1)
     else:
-        re_buddyinfo += "(%s)" % "|".join(nodes.split())
+        return value
 
-    if not re.findall(re_buddyinfo, buddy_info_content):
-        logging.warn("Can not find Nodes %s" % nodes)
-        return None
-    re_buddyinfo += ".*?zone\s+"
-    if zones == "all":
-        re_buddyinfo += "(\w+)"
-    else:
-        re_buddyinfo += "(%s)" % "|".join(zones.split())
-    if not re.findall(re_buddyinfo, buddy_info_content):
-        logging.warn("Can not find zones %s" % zones)
-        return None
-    re_buddyinfo += "\s+([\s\d]+)"
 
-    buddy_list = re.findall(re_buddyinfo, buddy_info_content)
+class _MemInfoItem(DataSize):
+    """
+    Representation of one item from /proc/meminfo
+    """
+    def __init__(self, name):
+        self.name = name
 
-    if re.findall("[<>=]", chunk_sizes) and buddy_list:
-        size_list = range(len(buddy_list[-1][-1].strip().split()))
-        chunk_sizes = [str(_) for _ in size_list if eval("%s %s" % (_,
-                                                                    chunk_sizes))]
+    def __getattr__(self, attr):
+        datasize = DataSize('%sk' % read_from_meminfo(self.name))
+        return getattr(datasize, attr)
 
-        chunk_sizes = ' '.join(chunk_sizes)
 
-    buddyinfo_dict = {}
-    for chunk_size in chunk_sizes.split():
-        buddyinfo_dict[chunk_size] = 0
-        for _, _, chunk_info in buddy_list:
-            chunk_info = chunk_info.strip().split()[int(chunk_size)]
-            buddyinfo_dict[chunk_size] += int(chunk_info)
+class MemInfo(object):
+    """
+    Representation of /proc/meminfo
+    """
 
-    return buddyinfo_dict
+    def __init__(self):
+        with open('/proc/meminfo', 'r') as meminfo_file:
+            for line in meminfo_file.readlines():
+                name = line.strip().split()[0].strip(':')
+                safe_name = name.replace('(', '_').replace(')', '_')
+                setattr(self, safe_name, _MemInfoItem(name))
+
+    def __iter__(self):
+        for item in self.__dict__.items():
+            yield item
+
+
+meminfo = MemInfo()

@@ -25,7 +25,11 @@ import stat
 import sys
 import time
 import tempfile
-import urlparse
+
+try:
+    import urlparse
+except ImportError:
+    import urllib.parse as urlparse
 
 from . import crypto
 from . import path as utils_path
@@ -91,7 +95,7 @@ class Asset(object):
             # - Be valid (not expired).
             # - Be verified (hash check).
             if (os.path.isfile(self.asset_file) and
-               not self._is_expired(self.asset_file, self.expire)):
+                    not self._is_expired(self.asset_file, self.expire)):
                 try:
                     with FileLock(self.asset_file, 1):
                         if self._verify():
@@ -106,6 +110,7 @@ class Asset(object):
         for cache_dir in self.cache_dirs:
             cache_dir = os.path.expanduser(cache_dir)
             self.asset_file = os.path.join(cache_dir, self.basename)
+            self.hashfile = '%s-CHECKSUM' % self.asset_file
             if not utils_path.usable_rw_dir(cache_dir):
                 continue
 
@@ -159,7 +164,6 @@ class Asset(object):
 
     def _compute_hash(self):
         result = crypto.hash_file(self.asset_file, algorithm=self.algorithm)
-        basename = os.path.basename(self.asset_file)
         with open(self.hashfile, 'w') as f:
             f.write('%s %s\n' % (self.algorithm, result))
 
@@ -168,8 +172,8 @@ class Asset(object):
         if not os.path.isfile(self.hashfile):
             self._compute_hash()
 
-        with open(self.hashfile, 'r') as f:
-            for line in f.readlines():
+        with open(self.hashfile, 'r') as asset_file:
+            for line in asset_file:
                 # md5 is 32 chars big and sha512 is 128 chars big.
                 # others supported algorithms are between those.
                 pattern = '%s [a-f0-9]{32,128}' % self.algorithm

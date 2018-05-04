@@ -21,14 +21,22 @@ framework tests.
 import inspect
 import logging
 import os
+import pipes
 import re
 import shutil
 import sys
+import tempfile
 import time
+import unittest
+
+from difflib import unified_diff
+from six import string_types, iteritems
 
 from . import data_dir
+from . import defaults
 from . import exceptions
-from . import multiplexer
+from . import output
+from . import parameters
 from . import sysinfo
 from ..utils import asset
 from ..utils import astring
@@ -37,49 +45,85 @@ from ..utils import genio
 from ..utils import path as utils_path
 from ..utils import process
 from ..utils import stacktrace
+from .decorators import skip
 from .settings import settings
 from .version import VERSION
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+from .output import LOG_JOB
 
 
-class NameNotTestNameError(Exception):
+#: Environment variable used to store the location of a temporary
+#: directory which is preserved across all tests execution (usually in
+#: one job)
+COMMON_TMPDIR_NAME = 'AVOCADO_TESTS_COMMON_TMPDIR'
+
+#: The list of test attributes that are used as the test state, which
+#: is given to the test runner via the queue they share
+TEST_STATE_ATTRIBUTES = ('name', 'logdir', 'logfile',
+                         'status', 'running', 'paused',
+                         'time_start', 'time_elapsed', 'time_end',
+                         'fail_reason', 'fail_class', 'traceback',
+                         'timeout', 'whiteboard')
+
+
+class RawFileHandler(logging.FileHandler):
 
     """
-    The given test name is not a TestName instance
-
-    With the introduction of :class:`avocado.core.test.TestName`, it's
-    not allowed to use other types as the ``name`` parameter to a test
-    instance.  This exception is raised when this is attempted.
+    File Handler that doesn't include arbitrary characters to the
+    logged stream but still respects the formatter.
     """
 
+    def __init__(self, *args, **kwargs):
+        logging.FileHandler.__init__(self, *args, **kwargs)
 
-class TestName(object):
+    def emit(self, record):
+        """
+        Modifying the original emit() to avoid including a new line
+        in streams that should be logged in its purest form, like in
+        stdout/stderr recordings.
+        """
+        if self.stream is None:
+            self.stream = self._open()
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            stream.write('%s' % msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
+class TestID(object):
 
     """
-    Test name representation
+    Test ID construction and representation according to specification
+
+    This class wraps the representation of both Avocado's Test ID
+    specification and Avocado's Test Name, which is part of a Test ID.
     """
 
     def __init__(self, uid, name, variant=None, no_digits=None):
         """
-        Test name according to avocado specification
+        Constructs a TestID instance
 
         :param uid: unique test id (within the job)
-        :param name: test name (identifies the executed test)
-        :param variant: variant id
+        :param name: test name, as returned by the Avocado test resolver
+                     (AKA as test loader)
+        :param variant: the variant applied to this Test ID
+        :type variant: dict
         :param no_digits: number of digits of the test uid
         """
         self.uid = uid
-        if no_digits >= 0:
+        if no_digits is not None and no_digits >= 0:
             self.str_uid = str(uid).zfill(no_digits if no_digits else 3)
         else:
             self.str_uid = str(uid)
         self.name = name or "<unknown>"
-        self.variant = variant
-        self.str_variant = "" if variant is None else ";" + str(variant)
+        if variant is None or variant["variant_id"] is None:
+            self.variant = None
+            self.str_variant = ""
+        else:
+            self.variant = variant["variant_id"]
+            self.str_variant = ";%s" % self.variant
 
     def __str__(self):
         return "%s-%s%s" % (self.str_uid, self.name, self.str_variant)
@@ -88,35 +132,164 @@ class TestName(object):
         return repr(str(self))
 
     def __eq__(self, other):
-        if isinstance(other, basestring):
+        if isinstance(other, string_types):
             return str(self) == other
         else:
             return self.__dict__ == other.__dict__
 
+    @property
     def str_filesystem(self):
         """
-        File-system friendly representation of the test name
+        Test ID in a format suitable for use in file systems
+
+        The string returned should be safe to be used as a file or
+        directory name.  This file system version of the test ID may
+        have to shorten either the Test Name or the Variant ID.
+
+        The first component of a Test ID, the numeric unique test id,
+        AKA "uid", will be used as a an stable identifier between the
+        Test ID and the file or directory created based on the return
+        value of this method.  If the filesystem can not even
+        represent the "uid", than an exception will be raised.
+
+        For Test ID "001-mytest;foo", examples of shortened file
+        system versions include "001-mytest;f" or "001-myte;foo".
+
+        :raises: RuntimeError if the test ID cannot be converted to a
+                 filesystem representation.
         """
-        name = str(self)
-        fsname = astring.string_to_safe_path(name)
-        if len(name) == len(fsname):    # everything fits in
-            return fsname
-        # 001-mytest;foo
-        # 001-mytest;f
-        # 001-myte;foo
-        idx_fit_variant = len(fsname) - len(self.str_variant)
+        test_id = str(self)
+        test_id_fs = astring.string_to_safe_path(test_id)
+        if len(test_id) == len(test_id_fs):    # everything fits in
+            return test_id_fs
+        idx_fit_variant = len(test_id_fs) - len(self.str_variant)
         if idx_fit_variant > len(self.str_uid):     # full uid+variant
-            return (fsname[:idx_fit_variant] +
+            return (test_id_fs[:idx_fit_variant] +
                     astring.string_to_safe_path(self.str_variant))
-        elif len(self.str_uid) <= len(fsname):   # full uid
+        elif len(self.str_uid) <= len(test_id_fs):   # full uid
             return astring.string_to_safe_path(self.str_uid + self.str_variant)
         else:       # not even uid could be stored in fs
-            raise AssertionError("Test uid is too long to be stored on the "
-                                 "filesystem: %s\nFull test name is %s"
-                                 % (self.str_uid, str(self)))
+            raise RuntimeError('Test ID is too long to be stored on the '
+                               'filesystem: "%s"\nFull Test ID: "%s"'
+                               % (self.str_uid, str(self)))
 
 
-class Test(unittest.TestCase):
+class TestData(object):
+
+    """
+    Class that adds the ability for tests to have access to data files
+
+    Writers of new test types can change the completely change the behavior
+    and still be compatible by providing an :attr:`DATA_SOURCES` attribute
+    and a meth:`get_data` method.
+    """
+
+    #: Defines the name of data sources that this implementation makes
+    #: available.  Users may choose to pick data file from a specific
+    #: source.
+    DATA_SOURCES = ["variant", "test", "file"]
+
+    def __init__(self):
+        self._data_sources_mapping = {
+            "variant": [lambda: self.datadir,
+                        lambda: "%s.%s" % (self.__class__.__name__,
+                                           self._testMethodName),
+                        lambda: self.name.variant],
+            "test": [lambda: self.datadir,
+                     lambda: "%s.%s" % (self.__class__.__name__,
+                                        self._testMethodName)],
+            "file": [lambda: self.datadir]
+        }
+
+    def _check_valid_data_source(self, source):
+        """
+        Utility to check if user chose a specific data source
+
+        :param source: either None for no specific selection or a source name
+        :type source: None or str
+        :raises: ValueError
+        """
+        if source is not None and source not in self.DATA_SOURCES:
+            msg = 'Data file source requested (%s) is not one of: %s'
+            msg %= (source, ', '.join(self.DATA_SOURCES))
+            raise ValueError(msg)
+
+    def _get_datadir(self, source):
+        path_components = self._data_sources_mapping.get(source)
+        if path_components is None:
+            return
+
+        # evaluate lazily, needed when the class changes its own
+        # information such as its datadir
+        path_components = [func() for func in path_components]
+        if None in path_components:
+            return
+
+        # if path components are absolute paths, let's believe that
+        # they have already been treated (such as the entries that
+        # return the self.datadir).  If not, let's split the path
+        # components so that they can be treated in the next loop
+        split_path_components = []
+        for path_component in path_components:
+            if not os.path.isabs(path_component):
+                split_path_components += path_component.split(os.path.sep)
+            else:
+                split_path_components.append(path_component)
+
+        # now, make sure each individual path component can be represented
+        # in the filesystem.  again, if it's an absolute path, do nothing
+        paths = []
+        for path in split_path_components:
+            if os.path.isabs(path):
+                paths.append(path)
+            else:
+                paths.append(astring.string_to_safe_path(path))
+
+        return os.path.join(*paths)
+
+    def get_data(self, filename, source=None, must_exist=True):
+        """
+        Retrieves the path to a given data file.
+
+        This implementation looks for data file in one of the sources
+        defined by the :attr:`DATA_SOURCES` attribute.
+
+        :param filename: the name of the data file to be retrieved
+        :type filename: str
+        :param source: one of the defined data sources.  If not set,
+                       all of the :attr:`DATA_SOURCES` will be attempted
+                       in the order they are defined
+        :type source: str
+        :param must_exist: whether the existence of a file is checked for
+        :type must_exist: bool
+        :rtype: str or None
+        """
+        log_fmt = 'DATA (filename=%s) => %s (%s)'
+        if source is None:
+            sources = self.DATA_SOURCES
+        else:
+            self._check_valid_data_source(source)
+            sources = [source]
+        for attempt_source in sources:
+            datadir = self._get_datadir(attempt_source)
+            if datadir is not None:
+                path = os.path.join(datadir, filename)
+                if not must_exist:
+                    self.log.debug(log_fmt, filename, path,
+                                   ("assumed to be located at %s source "
+                                    "dir" % attempt_source))
+                    return path
+                else:
+                    if os.path.exists(path):
+                        self.log.debug(log_fmt, filename, path,
+                                       "found at %s source dir" % attempt_source)
+                        return path
+
+        self.log.debug(log_fmt, filename, "NOT FOUND",
+                       "data sources: %s" % ', '.join(sources))
+
+
+class Test(unittest.TestCase, TestData):
 
     """
     Base implementation for the test class.
@@ -124,8 +297,18 @@ class Test(unittest.TestCase):
     You'll inherit from this to write your own tests. Typically you'll want
     to implement setUp(), test*() and tearDown() methods on your own tests.
     """
-    #: `default_params` will be deprecated by the end of 2017.
-    default_params = {}
+    #: Arbitrary string which will be stored in `$logdir/whiteboard` location
+    #: when the test finishes.
+    whiteboard = ''
+    #: (unix) time when the test started (could be forced from test)
+    time_start = -1
+    #: (unix) time when the test finished (could be forced from test)
+    time_end = -1
+    #: duration of the test execution (always recalculated from time_end -
+    #: time_start
+    time_elapsed = -1
+    #: Test timeout (the timeout from params takes precedence)
+    timeout = None
 
     def __init__(self, methodName='test', name=None, params=None,
                  base_logdir=None, job=None, runner_queue=None):
@@ -139,12 +322,11 @@ class Test(unittest.TestCase):
                      written with the avocado API, this should not be
                      set.  This is reserved for internal Avocado use,
                      such as when running random executables as tests.
-        :type name: :class:`avocado.core.test.TestName`
+        :type name: :class:`avocado.core.test.TestID`
         :param base_logdir: Directory where test logs should go. If None
                             provided, it'll use
                             :func:`avocado.data_dir.create_job_logs_dir`.
         :param job: The job that this test is part of.
-        :raises: :class:`avocado.core.test.NameNotTestNameError`
         """
         def record_and_warn(*args, **kwargs):
             """ Record call to this function and log warning """
@@ -153,89 +335,140 @@ class Test(unittest.TestCase):
             return original_log_warn(*args, **kwargs)
 
         if name is not None:
-            if not isinstance(name, TestName):
-                raise NameNotTestNameError(name)
-            self.name = name
+            self.__name = name
         else:
-            self.name = TestName(0, self.__class__.__name__)
+            self.__name = TestID(0, self.__class__.__name__)
 
-        self.job = job
-
-        if self.datadir is None:
-            self._expected_stdout_file = None
-            self._expected_stderr_file = None
-        else:
-            self._expected_stdout_file = os.path.join(self.datadir,
-                                                      'stdout.expected')
-            self._expected_stderr_file = os.path.join(self.datadir,
-                                                      'stderr.expected')
+        self.__job = job
 
         if base_logdir is None:
             base_logdir = data_dir.create_job_logs_dir()
         base_logdir = os.path.join(base_logdir, 'test-results')
-        logdir = os.path.join(base_logdir, self.name.str_filesystem())
+        logdir = os.path.join(base_logdir, self.name.str_filesystem)
         if os.path.exists(logdir):
             raise exceptions.TestSetupFail("Log dir already exists, this "
                                            "should never happen: %s"
                                            % logdir)
-        self.logdir = utils_path.init_dir(logdir)
+        self.__logdir = utils_path.init_dir(logdir)
 
         # Replace '/' with '_' to avoid splitting name into multiple dirs
         genio.set_log_file_dir(self.logdir)
-        self.logfile = os.path.join(self.logdir, 'debug.log')
+        self.__logfile = os.path.join(self.logdir, 'debug.log')
         self._ssh_logfile = os.path.join(self.logdir, 'remote.log')
 
         self._stdout_file = os.path.join(self.logdir, 'stdout')
         self._stderr_file = os.path.join(self.logdir, 'stderr')
+        self._output_file = os.path.join(self.logdir, 'output')
+        self._logging_handlers = {}
 
-        self.outputdir = utils_path.init_dir(self.logdir, 'data')
-        self.sysinfo_enabled = getattr(self.job, 'sysinfo', False)
-        if self.sysinfo_enabled:
-            self.sysinfodir = utils_path.init_dir(self.logdir, 'sysinfo')
-            self.sysinfo_logger = sysinfo.SysInfo(basedir=self.sysinfodir)
+        self.__outputdir = utils_path.init_dir(self.logdir, 'data')
+        self.__sysinfo_enabled = getattr(self.job, 'sysinfo', False)
+        if self.__sysinfo_enabled:
+            self.__sysinfodir = utils_path.init_dir(self.logdir, 'sysinfo')
+            self.__sysinfo_logger = sysinfo.SysInfo(basedir=self.__sysinfodir)
 
-        self.log = logging.getLogger("avocado.test")
+        self.__log = LOG_JOB
         original_log_warn = self.log.warning
         self.__log_warn_used = False
         self.log.warn = self.log.warning = record_and_warn
 
-        mux_path = ['/test/*']
-        if isinstance(params, dict):
-            self.default_params = self.default_params.copy()
-            self.default_params.update(params)
-            params = []
-        elif params is None:
+        self.log.info('INIT %s', self.name)
+
+        paths = ['/test/*']
+        if params is None:
             params = []
         elif isinstance(params, tuple):
-            params, mux_path = params[0], params[1]
-        self.params = multiplexer.AvocadoParams(params, self.name,
-                                                mux_path,
-                                                self.default_params)
+            params, paths = params[0], params[1]
+        self.__params = parameters.AvocadoParams(params, paths,
+                                                 self.__log.name)
         default_timeout = getattr(self, "timeout", None)
         self.timeout = self.params.get("timeout", default=default_timeout)
 
-        self.log.info('START %s', self.name)
+        self.__status = None
+        self.__fail_reason = None
+        self.__fail_class = None
+        self.__traceback = None
+        self.__cache_dirs = None    # Is initialized lazily
 
-        self.debugdir = None
-        self.resultsdir = None
-        self.status = None
-        self.fail_reason = None
-        self.fail_class = None
-        self.traceback = None
-        self.text_output = None
-
-        self.whiteboard = ''
-
-        self.running = False
-        self.time_start = -1
-        self.time_end = -1
+        self.__running = False
         self.paused = False
         self.paused_msg = ''
 
-        self.runner_queue = runner_queue
+        self.__runner_queue = runner_queue
 
-        self.time_elapsed = -1
+        base_tmpdir = getattr(job, "tmpdir", None)
+        # When tmpdir not specified by job, use logdir to preserve all data
+        if base_tmpdir is None:
+            base_tmpdir = tempfile.mkdtemp(prefix="tmp_dir", dir=self.logdir)
+        self.__workdir = os.path.join(base_tmpdir,
+                                      self.name.str_filesystem)
+        self.__srcdir_warning_logged = False
+        self.__srcdir = utils_path.init_dir(self.__workdir, 'src')
+
+        self.log.debug("Test metadata:")
+        if self.filename:
+            self.log.debug("  filename: %s", self.filename)
+        try:
+            teststmpdir = self.teststmpdir
+        except EnvironmentError:
+            pass
+        else:
+            self.log.debug("  teststmpdir: %s", teststmpdir)
+        self.log.debug("  workdir: %s", self.workdir)
+
         unittest.TestCase.__init__(self, methodName=methodName)
+        TestData.__init__(self)
+
+    @property
+    def name(self):
+        """
+        Returns the Test ID, which includes the test name
+
+        :rtype: TestID
+        """
+        return self.__name
+
+    @property
+    def job(self):
+        """
+        The job this test is associated with
+        """
+        return self.__job
+
+    @property
+    def log(self):
+        """
+        The enhanced test log
+        """
+        return self.__log
+
+    @property
+    def logdir(self):
+        """
+        Path to this test's logging dir
+        """
+        return self.__logdir
+
+    @property
+    def logfile(self):
+        """
+        Path to this test's main `debug.log` file
+        """
+        return self.__logfile
+
+    @property
+    def outputdir(self):
+        """
+        Directory available to test writers to attach files to the results
+        """
+        return self.__outputdir
+
+    @property
+    def params(self):
+        """
+        Parameters of this test (AvocadoParam instance)
+        """
+        return self.__params
 
     @property
     def basedir(self):
@@ -250,7 +483,18 @@ class Test(unittest.TestCase):
     @property
     def datadir(self):
         """
-        Returns the path to the directory that contains test data files
+        Returns the path to the directory that may contain test data files
+
+        For test a test file hosted at /usr/share/avocado/tests/sleeptest.py
+        the datadir is /usr/share/avocado/tests/sleeptest.py.data.
+
+        Note that this directory has no specific relation to the test
+        name, only to the file that contains the test.  It can be used to
+        host data files that are generic enough to be used for all tests
+        contained in a given test file.
+
+        This property is deprecated and will be removed in the future.
+        The :meth:`get_data` function should be used instead.
         """
         # Maximal allowed file name length is 255
         if (self.filename is not None and
@@ -278,27 +522,101 @@ class Test(unittest.TestCase):
         else:
             return None
 
-    @data_structures.LazyProperty
+    @property
+    def teststmpdir(self):
+        """
+        Returns the path of the temporary directory that will stay the
+        same for all tests in a given Job.
+        """
+        env_var = COMMON_TMPDIR_NAME
+        path = os.environ.get(env_var)
+        if path is None:
+            msg = 'Environment Variable %s is not set.' % env_var
+            raise EnvironmentError(msg)
+        return path
+
+    @property
     def workdir(self):
-        basename = (os.path.basename(self.logdir).replace(':', '_')
-                    .replace(';', '_'))
-        return utils_path.init_dir(data_dir.get_tmp_dir(), basename)
+        """
+        This property returns a writable directory that exists during
+        the entire test execution, but will be cleaned up once the
+        test finishes.
 
-    @data_structures.LazyProperty
+        It can be used on tasks such as decompressing source tarballs,
+        building software, etc.
+        """
+        return self.__workdir
+
+    @property
     def srcdir(self):
-        return utils_path.init_dir(self.workdir, 'src')
+        """
+        This property is deprecated and will be removed in the future.
+        The :meth:`workdir` property should be used instead.
+        """
+        if not self.__srcdir_warning_logged:
+            LOG_JOB.warn("DEPRECATION NOTICE: the test's \"srcdir\" property "
+                         "is deprecated and is planned to be removed no later "
+                         "than May 11 2018. Please use the \"workdir\" "
+                         "property instead.")
+            self.__srcdir_warning_logged = True
+        return self.__srcdir
 
-    @data_structures.LazyProperty
+    @property
     def cache_dirs(self):
         """
         Returns a list of cache directories as set in config file.
         """
-        cache_dirs = settings.get_value('datadir.paths', 'cache_dirs',
-                                        key_type=list, default=[])
-        datadir_cache = os.path.join(data_dir.get_data_dir(), 'cache')
-        if datadir_cache not in cache_dirs:
-            cache_dirs.append(datadir_cache)
-        return cache_dirs
+        if self.__cache_dirs is None:
+            cache_dirs = settings.get_value('datadir.paths', 'cache_dirs',
+                                            key_type=list, default=[])
+            datadir_cache = os.path.join(data_dir.get_data_dir(), 'cache')
+            if datadir_cache not in cache_dirs:
+                cache_dirs.append(datadir_cache)
+            self.__cache_dirs = cache_dirs
+        return self.__cache_dirs
+
+    @property
+    def runner_queue(self):
+        """
+        The communication channel between test and test runner
+        """
+        return self.__runner_queue
+
+    def set_runner_queue(self, runner_queue):
+        """
+        Override the runner_queue
+        """
+        if self.__runner_queue is not None:
+            raise RuntimeError("Overriding of runner_queue multiple "
+                               "times is not allowed -> old=%s new=%s"
+                               % (self.__runner_queue, runner_queue))
+        self.__runner_queue = runner_queue
+
+    @property
+    def status(self):
+        """
+        The result status of this test
+        """
+        return self.__status
+
+    @property
+    def running(self):
+        """
+        Whether this test is currently being executed
+        """
+        return self.__running
+
+    @property
+    def fail_reason(self):
+        return self.__fail_reason
+
+    @property
+    def fail_class(self):
+        return self.__fail_class
+
+    @property
+    def traceback(self):
+        return self.__traceback
 
     def __str__(self):
         return str(self.name)
@@ -307,11 +625,12 @@ class Test(unittest.TestCase):
         return "Test(%r)" % self.name
 
     def _tag_start(self):
-        self.running = True
+        self.log.info('START %s', self.name)
+        self.__running = True
         self.time_start = time.time()
 
     def _tag_end(self):
-        self.running = False
+        self.__running = False
         self.time_end = time.time()
         # for consistency sake, always use the same stupid method
         self._update_time_elapsed(self.time_end)
@@ -337,25 +656,28 @@ class Test(unittest.TestCase):
         """
         if self.running and self.time_start:
             self._update_time_elapsed()
-        preserve_attr = ['basedir', 'debugdir', 'depsdir', 'fail_reason',
-                         'logdir', 'logfile', 'name', 'resultsdir', 'srcdir',
-                         'status', 'sysinfodir', 'text_output', 'time_elapsed',
-                         'traceback', 'workdir', 'whiteboard', 'time_start',
-                         'time_end', 'running', 'paused', 'paused_msg',
-                         'fail_class', 'params', "timeout"]
-        state = dict([(key, self.__dict__.get(key)) for key in preserve_attr])
+        state = {key: getattr(self, key, None) for (key) in TEST_STATE_ATTRIBUTES}
         state['class_name'] = self.__class__.__name__
         state['job_logdir'] = self.job.logdir
         state['job_unique_id'] = self.job.unique_id
+        try:
+            state['params'] = [(path, key, value)
+                               for path, key, value
+                               in self.__params.iteritems()]
+        except Exception:
+            state['params'] = None
         return state
 
     def _register_log_file_handler(self, logger, formatter, filename,
-                                   log_level=logging.DEBUG):
-        file_handler = logging.FileHandler(filename=filename)
+                                   log_level=logging.DEBUG, raw=False):
+        if raw:
+            file_handler = RawFileHandler(filename=filename)
+        else:
+            file_handler = logging.FileHandler(filename=filename)
         file_handler.setLevel(log_level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-        return file_handler
+        self._logging_handlers[logger.name] = file_handler
 
     def _start_logging(self):
         """
@@ -373,106 +695,198 @@ class Test(unittest.TestCase):
         stream_fmt = '%(message)s'
         stream_formatter = logging.Formatter(fmt=stream_fmt)
 
-        self._register_log_file_handler(logging.getLogger("avocado.test.stdout"),
+        log_test_stdout = LOG_JOB.getChild("stdout")
+        log_test_stderr = LOG_JOB.getChild("stderr")
+        log_test_output = LOG_JOB.getChild("output")
+
+        self._register_log_file_handler(log_test_stdout,
                                         stream_formatter,
-                                        self._stdout_file)
-        self._register_log_file_handler(logging.getLogger("avocado.test.stderr"),
+                                        self._stdout_file,
+                                        raw=True)
+        self._register_log_file_handler(log_test_stderr,
                                         stream_formatter,
-                                        self._stderr_file)
-        self._ssh_fh = self._register_log_file_handler(logging.getLogger('paramiko'),
-                                                       formatter,
-                                                       self._ssh_logfile)
+                                        self._stderr_file,
+                                        raw=True)
+        self._register_log_file_handler(log_test_output,
+                                        stream_formatter,
+                                        self._output_file,
+                                        raw=True)
+
+        self._register_log_file_handler(logging.getLogger('paramiko'),
+                                        formatter,
+                                        self._ssh_logfile)
+
+        if isinstance(sys.stdout, output.LoggingFile):
+            sys.stdout.add_logger(log_test_stdout)
+        if isinstance(sys.stderr, output.LoggingFile):
+            sys.stderr.add_logger(log_test_stderr)
 
     def _stop_logging(self):
         """
         Stop the logging activity of the test by cleaning the logger handlers.
         """
         self.log.removeHandler(self.file_handler)
-        logging.getLogger('paramiko').removeHandler(self._ssh_fh)
+        if isinstance(sys.stderr, output.LoggingFile):
+            sys.stderr.rm_logger(LOG_JOB.getChild("stderr"))
+        if isinstance(sys.stdout, output.LoggingFile):
+            sys.stdout.rm_logger(LOG_JOB.getChild("stdout"))
+        for name, handler in iteritems(self._logging_handlers):
+            logging.getLogger(name).removeHandler(handler)
 
-    def _record_reference_stdout(self):
-        if self.datadir is not None:
-            utils_path.init_dir(self.datadir)
-            shutil.copyfile(self._stdout_file, self._expected_stdout_file)
+    def _record_reference(self, produced_file_path, reference_file_name):
+        '''
+        Saves a copy of a file produced by the test into a reference file
 
-    def _record_reference_stderr(self):
-        if self.datadir is not None:
-            utils_path.init_dir(self.datadir)
-            shutil.copyfile(self._stderr_file, self._expected_stderr_file)
+        This utility method will copy the produced file into the expected
+        reference file location, which can later be used for comparison
+        on subsequent test runs.
 
-    def _check_reference_stdout(self):
-        if (self._expected_stdout_file is not None and
-                os.path.isfile(self._expected_stdout_file)):
-            expected = genio.read_file(self._expected_stdout_file)
-            actual = genio.read_file(self._stdout_file)
-            msg = ('Actual test sdtout differs from expected one:\n'
-                   'Actual:\n%s\nExpected:\n%s' % (actual, expected))
-            self.assertEqual(expected, actual, msg)
+        Note: A reference file is a "golden" file with content that is
+        expected to match what was produced during the test.  If the
+        produced content matches the reference file content, the test
+        performed correctly.
 
-    def _check_reference_stderr(self):
-        if (self._expected_stderr_file is not None and
-                os.path.isfile(self._expected_stderr_file)):
-            expected = genio.read_file(self._expected_stderr_file)
-            actual = genio.read_file(self._stderr_file)
-            msg = ('Actual test sdterr differs from expected one:\n'
-                   'Actual:\n%s\nExpected:\n%s' % (actual, expected))
-            self.assertEqual(expected, actual, msg)
+        :param produced_file_path: the location of the file that was produced
+                                   by this test execution
+        :type produced_file_path: str
+        :param reference_file_name: the name of the file that will be used on
+                                    subsequent runs to check the test produced
+                                    the correct content.  This file will be
+                                    saved into a location obtained by
+                                    calling :meth:`get_data()`.
+        :type reference_file_name: str
+        '''
+        reference_path = self.get_data(reference_file_name, must_exist=False)
+        if reference_path is not None:
+            utils_path.init_dir(os.path.dirname(reference_path))
+            shutil.copyfile(produced_file_path, reference_path)
+
+    def _check_reference(self, produced_file_path, reference_file_name,
+                         diff_file_name, child_log_name, name='Content'):
+        '''
+        Compares the file produced by the test with the reference file
+
+        :param produced_file_path: the location of the file that was produced
+                                   by this test execution
+        :type produced_file_path: str
+        :param reference_file_name: the name of the file that will compared
+                                    with the content produced by this test
+        :type reference_file_name: str
+        :param diff_file_name: in case of differences between the produced
+                               and reference file, a file with this name will
+                               be saved to the test results directory, with
+                               the differences in unified diff format
+        :type diff_file_name: str
+        :param child_log_name: the name of a logger, child of :data:`LOG_JOB`,
+                               to be used when logging the content differences
+        :type child_log_name: str
+        :param name: optional parameter for a descriptive name of the type of
+                     content being checked here
+        :type name: str
+        :returns: True if the check was performed (there was a reference file) and
+                  was successful, and False otherwise (there was no such reference
+                  file and thus no check was performed).
+        :raises: :class:`exceptions.TestFail` when the check is performed and fails
+        '''
+        reference_path = self.get_data(reference_file_name)
+        if reference_path is not None:
+            expected = genio.read_file(reference_path)
+            actual = genio.read_file(produced_file_path)
+            diff_path = os.path.join(self.logdir, diff_file_name)
+
+            fmt = '%(message)s'
+            formatter = logging.Formatter(fmt=fmt)
+            log_diff = LOG_JOB.getChild(child_log_name)
+            self._register_log_file_handler(log_diff,
+                                            formatter,
+                                            diff_path)
+
+            diff = unified_diff(expected.splitlines(), actual.splitlines(),
+                                fromfile=reference_path,
+                                tofile=produced_file_path)
+            diff_content = []
+            for diff_line in diff:
+                diff_content.append(diff_line.rstrip('\n'))
+
+            if diff_content:
+                self.log.debug('%s Diff:', name)
+                for line in diff_content:
+                    log_diff.debug(line)
+                self.fail('Actual test %s differs from expected one' % name)
+            else:
+                return True
+        return False
 
     def _run_avocado(self):
         """
         Auxiliary method to run_avocado.
         """
+        # If the test contains an output.expected file, it requires
+        # changing the mode of operation of the process.* utility
+        # methods, so that after the test finishes, the output
+        # produced can be compared to the expected one.  This runs in
+        # its own process, so the change should not effect other
+        # components using process.* functions.
+        if self.get_data('output.expected') is not None:
+            process.OUTPUT_CHECK_RECORD_MODE = 'combined'
+
         testMethod = getattr(self, self._testMethodName)
         self._start_logging()
-        if self.sysinfo_enabled:
-            self.sysinfo_logger.start_test_hook()
+        if self.__sysinfo_enabled:
+            self.__sysinfo_logger.start_test_hook()
         test_exception = None
         cleanup_exception = None
+        output_check_exception = None
         stdout_check_exception = None
         stderr_check_exception = None
+        skip_test = getattr(testMethod, '__skip_test_decorator__', False)
         try:
-            self.setUp()
+            if skip_test is False:
+                self.setUp()
         except exceptions.TestSkipError as details:
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
+            skip_test = True
+            stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
             raise exceptions.TestSkipError(details)
-        except exceptions.TestTimeoutSkip as details:
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
-            raise exceptions.TestTimeoutSkip(details)
+        except exceptions.TestCancel as details:
+            stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
+            raise
         except:  # Old-style exceptions are not inherited from Exception()
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
+            stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
             details = sys.exc_info()[1]
             raise exceptions.TestSetupFail(details)
-        try:
-            testMethod()
-        except exceptions.TestSkipError as details:
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
-            skip_illegal_msg = ('Calling skip() in places other than '
-                                'setUp() is not allowed in avocado, you '
-                                'must fix your test. Original skip exception: '
-                                '%s' % details)
-            raise exceptions.TestError(skip_illegal_msg)
-        except:  # Old-style exceptions are not inherited from Exception()
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
-            details = sys.exc_info()[1]
-            if not isinstance(details, Exception):  # Avoid passing nasty exc
-                details = exceptions.TestError("%r: %s" % (details, details))
-            test_exception = details
-            self.log.debug("Local variables:")
-            local_vars = inspect.trace()[1][0].f_locals
-            for key, value in local_vars.iteritems():
-                self.log.debug(' -> %s %s: %s', key, type(value), value)
+        else:
+            try:
+                testMethod()
+            except exceptions.TestCancel as details:
+                stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
+                raise
+            except:  # Old-style exceptions are not inherited from Exception()
+                stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
+                details = sys.exc_info()[1]
+                if not isinstance(details, Exception):  # Avoid passing nasty exc
+                    details = exceptions.TestError("%r: %s" % (details, details))
+                test_exception = details
+                self.log.debug("Local variables:")
+                local_vars = inspect.trace()[1][0].f_locals
+                for key, value in iteritems(local_vars):
+                    self.log.debug(' -> %s %s: %s', key, type(value), value)
         finally:
             try:
-                self.tearDown()
+                if skip_test is False:
+                    self.tearDown()
             except exceptions.TestSkipError as details:
-                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
-                skip_illegal_msg = ('Calling skip() in places other than '
-                                    'setUp() is not allowed in avocado, '
-                                    'you must fix your test. Original skip '
-                                    'exception: %s' % details)
+                stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
+                skip_illegal_msg = ('Using skip decorators in tearDown() '
+                                    'is not allowed in '
+                                    'avocado, you must fix your '
+                                    'test. Original skip exception: %s' %
+                                    details)
                 raise exceptions.TestError(skip_illegal_msg)
+            except exceptions.TestCancel as details:
+                stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
+                raise
             except:  # avoid old-style exception failures
-                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.test')
+                stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
                 details = sys.exc_info()[1]
                 cleanup_exception = exceptions.TestSetupFail(details)
 
@@ -483,37 +897,66 @@ class Test(unittest.TestCase):
             job_standalone = getattr(self.job.args, 'standalone', False)
             output_check_record = getattr(self.job.args,
                                           'output_check_record', 'none')
-            no_record_mode = (not job_standalone and
-                              output_check_record == 'none')
-            disable_output_check = (not job_standalone and
-                                    getattr(self.job.args,
-                                            'output_check', 'on') == 'off')
+            output_check = getattr(self.job.args, 'output_check', 'on')
 
-            if job_standalone or no_record_mode:
-                if not disable_output_check:
+            # record the output if the modes are valid
+            if output_check_record == 'combined':
+                self._record_reference(self._output_file,
+                                       "output.expected")
+            else:
+                if output_check_record in ['all', 'both', 'stdout']:
+                    self._record_reference(self._stdout_file,
+                                           "stdout.expected")
+                if output_check_record in ['all', 'both', 'stderr']:
+                    self._record_reference(self._stderr_file,
+                                           "stderr.expected")
+
+            # check the output and produce test failures
+            if ((not job_standalone or
+                 output_check_record != 'none') and output_check == 'on'):
+                output_checked = False
+                try:
+                    output_checked = self._check_reference(
+                        self._output_file,
+                        'output.expected',
+                        'output.diff',
+                        'output_diff',
+                        'Output')
+                except Exception as details:
+                    stacktrace.log_exc_info(sys.exc_info(),
+                                            logger=LOG_JOB)
+                    output_check_exception = details
+                if not output_checked:
                     try:
-                        self._check_reference_stdout()
+                        self._check_reference(self._stdout_file,
+                                              'stdout.expected',
+                                              'stdout.diff',
+                                              'stdout_diff',
+                                              'Stdout')
                     except Exception as details:
+                        # output check was performed (and failed)
+                        output_checked = True
                         stacktrace.log_exc_info(sys.exc_info(),
-                                                logger='avocado.test')
+                                                logger=LOG_JOB)
                         stdout_check_exception = details
                     try:
-                        self._check_reference_stderr()
+                        self._check_reference(self._stderr_file,
+                                              'stderr.expected',
+                                              'stderr.diff',
+                                              'stderr_diff',
+                                              'Stderr')
                     except Exception as details:
                         stacktrace.log_exc_info(sys.exc_info(),
-                                                logger='avocado.test')
+                                                logger=LOG_JOB)
                         stderr_check_exception = details
-            elif not job_standalone:
-                if output_check_record in ['all', 'stdout']:
-                    self._record_reference_stdout()
-                if output_check_record in ['all', 'stderr']:
-                    self._record_reference_stderr()
 
         # pylint: disable=E0702
         if test_exception is not None:
             raise test_exception
         elif cleanup_exception is not None:
             raise cleanup_exception
+        elif output_check_exception is not None:
+            raise output_check_exception
         elif stdout_check_exception is not None:
             raise stdout_check_exception
         elif stderr_check_exception is not None:
@@ -523,9 +966,9 @@ class Test(unittest.TestCase):
                                       "during execution. Check the log for "
                                       "details.")
 
-        self.status = 'PASS'
-        if self.sysinfo_enabled:
-            self.sysinfo_logger.end_test_hook()
+        self.__status = 'PASS'
+        if self.__sysinfo_enabled:
+            self.__sysinfo_logger.end_test_hook()
 
     def _setup_environment_variables(self):
         os.environ['AVOCADO_VERSION'] = VERSION
@@ -534,12 +977,12 @@ class Test(unittest.TestCase):
         if self.datadir is not None:
             os.environ['AVOCADO_TEST_DATADIR'] = self.datadir
         os.environ['AVOCADO_TEST_WORKDIR'] = self.workdir
-        os.environ['AVOCADO_TEST_SRCDIR'] = self.srcdir
         os.environ['AVOCADO_TEST_LOGDIR'] = self.logdir
         os.environ['AVOCADO_TEST_LOGFILE'] = self.logfile
         os.environ['AVOCADO_TEST_OUTPUTDIR'] = self.outputdir
-        if self.sysinfo_enabled:
-            os.environ['AVOCADO_TEST_SYSINFODIR'] = self.sysinfodir
+        if self.__sysinfo_enabled:
+            os.environ['AVOCADO_TEST_SYSINFODIR'] = self.__sysinfodir
+        os.environ['AVOCADO_TEST_SRCDIR'] = self.__srcdir
 
     def run_avocado(self):
         """
@@ -552,34 +995,32 @@ class Test(unittest.TestCase):
             self._tag_start()
             self._run_avocado()
         except exceptions.TestBaseException as detail:
-            self.status = detail.status
-            self.fail_class = detail.__class__.__name__
-            self.fail_reason = detail
-            self.traceback = stacktrace.prepare_exc_info(sys.exc_info())
+            self.__status = detail.status
+            self.__fail_class = detail.__class__.__name__
+            self.__fail_reason = str(detail)
+            self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
         except AssertionError as detail:
-            self.status = 'FAIL'
-            self.fail_class = detail.__class__.__name__
-            self.fail_reason = detail
-            self.traceback = stacktrace.prepare_exc_info(sys.exc_info())
+            self.__status = 'FAIL'
+            self.__fail_class = detail.__class__.__name__
+            self.__fail_reason = str(detail)
+            self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
         except Exception as detail:
-            self.status = 'ERROR'
+            self.__status = 'ERROR'
             tb_info = stacktrace.tb_info(sys.exc_info())
-            self.traceback = stacktrace.prepare_exc_info(sys.exc_info())
+            self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
             try:
-                self.fail_class = str(detail.__class__.__name__)
-                self.fail_reason = str(detail)
+                self.__fail_class = str(detail.__class__.__name__)
+                self.__fail_reason = str(detail)
             except TypeError:
-                self.fail_class = "Exception"
-                self.fail_reason = ("Unable to get exception, check the "
-                                    "traceback for details.")
+                self.__fail_class = "Exception"
+                self.__fail_reason = ("Unable to get exception, check the "
+                                      "traceback for details.")
             for e_line in tb_info:
                 self.log.error(e_line)
         finally:
             self._tag_end()
             self._report()
             self.log.info("")
-            with open(self.logfile, 'r') as log_file_obj:
-                self.text_output = log_file_obj.read()
             self._stop_logging()
 
     def _report(self):
@@ -594,7 +1035,7 @@ class Test(unittest.TestCase):
 
         else:
             if self.status is None:
-                self.status = 'INTERRUPTED'
+                self.__status = 'INTERRUPTED'
             self.log.info("%s %s", self.status,
                           self.name)
 
@@ -622,20 +1063,20 @@ class Test(unittest.TestCase):
         """
         raise exceptions.TestError(message)
 
-    def skip(self, message=None):
+    def cancel(self, message=None):
         """
-        Skips the currently running test.
+        Cancels the test.
 
-        This method should only be called from a test's setUp() method, not
-        anywhere else, since by definition, if a test gets to be executed, it
-        can't be skipped anymore. If you call this method outside setUp(),
-        avocado will mark your test status as ERROR, and instruct you to
-        fix your test in the error message.
+        This method is expected to be called from the test method, not
+        anywhere else, since by definition, we can only cancel a test that
+        is currently under execution. If you call this method outside the
+        test method, avocado will mark your test status as ERROR, and
+        instruct you to fix your test in the error message.
 
         :param message: an optional message that will be recorded in the logs
         :type message: str
         """
-        raise exceptions.TestSkipError(message)
+        raise exceptions.TestCancel(message)
 
     def fetch_asset(self, name, asset_hash=None, algorithm='sha1',
                     locations=None, expire=None):
@@ -664,20 +1105,32 @@ class SimpleTest(Test):
     Run an arbitrary command that returns either 0 (PASS) or !=0 (FAIL).
     """
 
-    re_avocado_log = re.compile(r'^\d\d:\d\d:\d\d DEBUG\| \[stdout\]'
-                                r' \d\d:\d\d:\d\d WARN \|')
+    DATA_SOURCES = ["variant", "file"]
 
-    def __init__(self, name, params=None, base_logdir=None, job=None):
+    def __init__(self, name, params=None, base_logdir=None, job=None,
+                 executable=None):
+        if executable is None:
+            executable = name.name
+        self._filename = executable
         super(SimpleTest, self).__init__(name=name, params=params,
                                          base_logdir=base_logdir, job=job)
-        self._command = self.filename
+        self._data_sources_mapping = {"variant": [lambda: self.datadir,
+                                                  lambda: self.name.variant],
+                                      "file": [lambda: self.datadir]}
+        self._command = None
+        if self.filename is not None:
+            self._command = pipes.quote(self.filename)
+            # process.run expects unicode as the command, but pipes.quote
+            # turns it into a "bytes" array in Python 2
+            if not astring.is_text(self._command):
+                self._command = astring.to_text(self._command, defaults.ENCODING)
 
     @property
     def filename(self):
         """
         Returns the name of the file (path) that holds the current test
         """
-        return os.path.abspath(self.name.name)
+        return os.path.abspath(self._filename)
 
     def _log_detailed_cmd_info(self, result):
         """
@@ -688,7 +1141,7 @@ class SimpleTest(Test):
         self.log.info("Exit status: %s", result.exit_status)
         self.log.info("Duration: %s", result.duration)
 
-    def execute_cmd(self):
+    def _execute_cmd(self):
         """
         Run the executable, and log its detailed execution.
         """
@@ -696,37 +1149,90 @@ class SimpleTest(Test):
             test_params = dict([(str(key), str(val)) for _, key, val in
                                 self.params.iteritems()])
 
-            # process.run uses shlex.split(), the self.path needs to be escaped
             result = process.run(self._command, verbose=True,
-                                 env=test_params)
+                                 env=test_params, encoding=defaults.ENCODING)
 
             self._log_detailed_cmd_info(result)
         except process.CmdError as details:
             self._log_detailed_cmd_info(details.result)
             raise exceptions.TestFail(details)
 
+        warn_regex = settings.get_value('simpletests.status',
+                                        'warn_regex',
+                                        key_type='str',
+                                        default=None)
+
+        warn_location = settings.get_value('simpletests.status',
+                                           'warn_location',
+                                           default='all')
+
+        skip_regex = settings.get_value('simpletests.status',
+                                        'skip_regex',
+                                        key_type='str',
+                                        default=None)
+
+        skip_location = settings.get_value('simpletests.status',
+                                           'skip_location',
+                                           default='all')
+
+        # Keeping compatibility with 'avocado_warn' libexec
+        for regex in [warn_regex, r'^\d\d:\d\d:\d\d WARN \|']:
+            warn_msg = ("Test passed but there were warnings on %s during "
+                        "execution. Check the log for details.")
+            if regex is not None:
+                re_warn = re.compile(regex, re.MULTILINE)
+                if warn_location in ['all', 'stdout']:
+                    if re_warn.search(result.stdout_text):
+                        raise exceptions.TestWarn(warn_msg % 'stdout')
+
+                if warn_location in ['all', 'stderr']:
+                    if re_warn.search(result.stderr_text):
+                        raise exceptions.TestWarn(warn_msg % 'stderr')
+
+        if skip_regex is not None:
+            re_skip = re.compile(skip_regex, re.MULTILINE)
+            skip_msg = ("Test passed but %s indicates test was skipped. "
+                        "Check the log for details.")
+
+            if skip_location in ['all', 'stdout']:
+                if re_skip.search(result.stdout_text):
+                    raise exceptions.TestSkipError(skip_msg % 'stdout')
+
+            if skip_location in ['all', 'stderr']:
+                if re_skip.search(result.stderr_text):
+                    raise exceptions.TestSkipError(skip_msg % 'stderr')
+
     def test(self):
         """
         Run the test and postprocess the results
         """
-        self.execute_cmd()
-        for line in open(self.logfile):
-            if self.re_avocado_log.match(line):
-                raise exceptions.TestWarn("Test passed but there were warnings"
-                                          " on stdout during execution. Check "
-                                          "the log for details.")
+        self._execute_cmd()
+
+
+class ExternalRunnerSpec(object):
+    """
+    Defines the basic options used by ExternalRunner
+    """
+    def __init__(self, runner, chdir=None, test_dir=None):
+        self.runner = runner
+        self.chdir = chdir
+        self.test_dir = test_dir
 
 
 class ExternalRunnerTest(SimpleTest):
 
     def __init__(self, name, params=None, base_logdir=None, job=None,
-                 external_runner=None):
-        self.assertIsNotNone(external_runner, "External runner test requires "
+                 external_runner=None, external_runner_argument=None):
+        if external_runner_argument is None:
+            external_runner_argument = name.name
+        if external_runner is None:
+            raise ValueError("External runner test requires a valid "
                              "external_runner parameter, got None instead.")
         self.external_runner = external_runner
         super(ExternalRunnerTest, self).__init__(name, params, base_logdir,
                                                  job)
-        self._command = external_runner.runner + " " + self.name.name
+        self._command = "%s %s" % (external_runner.runner,
+                                   external_runner_argument)
 
     @property
     def filename(self):
@@ -736,8 +1242,8 @@ class ExternalRunnerTest(SimpleTest):
         pre_cwd = os.getcwd()
         new_cwd = None
         try:
-            self.log.info('Running test with the external level test '
-                          'runner: "%s"', self.external_runner.runner)
+            self.log.info('Running test with the external test runner: "%s"',
+                          self.external_runner.runner)
 
             # Change work directory if needed by the external runner
             if self.external_runner.chdir == 'runner':
@@ -752,49 +1258,60 @@ class ExternalRunnerTest(SimpleTest):
                                new_cwd)
                 os.chdir(new_cwd)
 
-            self.execute_cmd()
+            self._execute_cmd()
 
         finally:
             if new_cwd is not None:
                 os.chdir(pre_cwd)
 
 
-class MissingTest(Test):
+class PythonUnittest(ExternalRunnerTest):
+    """
+    Python unittest test
+    """
+    def __init__(self, name, params=None, base_logdir=None, job=None,
+                 test_dir=None, python_unittest_module=None):
+        runner = "%s -m unittest -q -c" % sys.executable
+        external_runner = ExternalRunnerSpec(runner, "test", test_dir)
+        super(PythonUnittest, self).__init__(name, params, base_logdir, job,
+                                             external_runner=external_runner,
+                                             external_runner_argument=python_unittest_module)
 
-    """
-    Handle when there is no such test module in the test directory.
-    """
+    def _find_result(self, status="OK"):
+        status_line = "[stderr] %s" % status
+        with open(self.logfile) as logfile:
+            lines = iter(logfile)
+            for line in lines:
+                if "[stderr] Ran 1 test in" in line:
+                    break
+            for line in lines:
+                if status_line in line:
+                    return line
+        self.error("Fail to parse status from test result.")
 
     def test(self):
-        e_msg = ('Test %s could not be found in the test dir %s '
-                 '(or test path does not exist)' %
-                 (self.name, data_dir.get_test_dir()))
-        raise exceptions.TestNotFoundError(e_msg)
+        try:
+            super(PythonUnittest, self).test()
+        except exceptions.TestFail:
+            status = self._find_result("FAILED")
+            if "errors" in status:
+                self.error("Unittest reported error(s)")
+            elif "failures" in status:
+                self.fail("Unittest reported failure(s)")
+            else:
+                self.error("Unknown failure executing the unittest")
+        status = self._find_result("OK")
+        if "skipped" in status:
+            self.cancel("Unittest reported skip")
 
 
-class NotATest(Test):
-
-    """
-    The file is not a test.
-
-    Either a non executable python module with no avocado test class in it,
-    or a regular, non executable file.
-    """
-
-    def test(self):
-        e_msg = ('File %s is not executable and does not contain an avocado '
-                 'test class in it ' % self.name)
-        raise exceptions.NotATestError(e_msg)
-
-
-class SkipTest(Test):
+class MockingTest(Test):
 
     """
-    Class intended as generic substitute for avocado tests which fails during
-    setUp phase using "self._skip_reason" message.
+    Class intended as generic substitute for avocado tests which will
+    not be executed for some reason. This class is expected to be
+    overridden by specific reason-oriented sub-classes.
     """
-
-    _skip_reason = "Generic skip test reason"
 
     def __init__(self, *args, **kwargs):
         """
@@ -809,19 +1326,15 @@ class SkipTest(Test):
                 super_kwargs[arg] = kwargs[arg]
             elif args:
                 super_kwargs[arg] = args.pop()
-        # The methodName might not exist in SkipTest, make sure it's self.test
+        # The methodName might not exist, make sure it's self.test
         super_kwargs["methodName"] = "test"
-        super(SkipTest, self).__init__(**super_kwargs)
-
-    def setUp(self):
-        raise exceptions.TestSkipError(self._skip_reason)
+        super(MockingTest, self).__init__(**super_kwargs)
 
     def test(self):
-        """ Should not be executed """
-        raise RuntimeError("This should never be executed!")
+        pass
 
 
-class TimeOutSkipTest(SkipTest):
+class TimeOutSkipTest(MockingTest):
 
     """
     Skip test due job timeout.
@@ -830,28 +1343,25 @@ class TimeOutSkipTest(SkipTest):
     It will never have a chance to execute.
     """
 
-    _skip_reason = "Test skipped due a job timeout!"
+    @skip('Test skipped due a job timeout!')
+    def test(self):
+        pass
 
-    def setUp(self):
-        raise exceptions.TestTimeoutSkip(self._skip_reason)
 
-
-class DryRunTest(SkipTest):
+class DryRunTest(MockingTest):
 
     """
-    Fake test which logs itself and reports as SKIP
+    Fake test which logs itself and reports as CANCEL
     """
-
-    _skip_reason = "Test skipped due to --dry-run"
 
     def setUp(self):
         self.log.info("Test params:")
         for path, key, value in self.params.iteritems():
             self.log.info("%s:%s ==> %s", path, key, value)
-        super(DryRunTest, self).setUp()
+        self.cancel('Test cancelled due to --dry-run')
 
 
-class ReplaySkipTest(SkipTest):
+class ReplaySkipTest(MockingTest):
 
     """
     Skip test due to job replay filter.
@@ -860,7 +1370,9 @@ class ReplaySkipTest(SkipTest):
     It will never have a chance to execute.
     """
 
-    _skip_reason = "Test skipped due to a job replay filter!"
+    @skip('Test skipped due to a job replay filter!')
+    def test(self):
+        pass
 
 
 class TestError(Test):

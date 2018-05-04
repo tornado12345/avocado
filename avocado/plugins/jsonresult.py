@@ -18,9 +18,9 @@ JSON output module.
 """
 
 import json
-import logging
 import os
 
+from avocado.core.output import LOG_UI
 from avocado.core.parser import FileOrStdoutAction
 from avocado.core.plugin_interfaces import CLI, Result
 
@@ -44,16 +44,7 @@ class JSONResult(Result):
                           'whiteboard': test.get('whiteboard', UNKNOWN),
                           'logdir': test.get('logdir', UNKNOWN),
                           'logfile': test.get('logfile', UNKNOWN),
-                          'fail_reason': str(test.get('fail_reason', UNKNOWN)),
-                          # COMPATIBILITY: `test` and `url` are backward
-                          # compatibility key names for the test ID,
-                          # as defined by the test name RFC.  `url` is
-                          # not a test reference, as it's recorded
-                          # after it has been processed by the test resolver
-                          # (currently called test loader in the code).
-                          # Expect them to be removed in the future.
-                          'test': str(test.get('name', UNKNOWN)),
-                          'url': str(test.get('name', UNKNOWN))})
+                          'fail_reason': str(test.get('fail_reason', UNKNOWN))})
         content = {'job_id': result.job_unique_id,
                    'debuglog': result.logfile,
                    'tests': tests,
@@ -62,6 +53,7 @@ class JSONResult(Result):
                    'errors': result.errors,
                    'failures': result.failed,
                    'skip': result.skipped,
+                   'cancel': result.cancelled,
                    'time': result.tests_total_time}
         return json.dumps(content,
                           sort_keys=True,
@@ -73,6 +65,9 @@ class JSONResult(Result):
                 hasattr(job.args, 'json_output')):
             return
 
+        if not result.tests_total:
+            return
+
         content = self._render(result)
         if getattr(job.args, 'json_job_result', 'off') == 'on':
             json_path = os.path.join(job.logdir, 'results.json')
@@ -82,8 +77,7 @@ class JSONResult(Result):
         json_path = getattr(job.args, 'json_output', 'None')
         if json_path is not None:
             if json_path == '-':
-                log = logging.getLogger("avocado.app")
-                log.debug(content)
+                LOG_UI.debug(content)
             else:
                 with open(json_path, 'w') as json_file:
                     json_file.write(content)

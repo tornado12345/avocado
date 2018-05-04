@@ -4,16 +4,16 @@
 
     "tests": [
 	{"name": "Avocado source is sound",
-	 "description": "On your development machine, on a freshen Avocado source to be released, run `$ make check`. Expected result: Make command should say OK."},
+	 "description": "On your development machine, on a freshen Avocado source to be released, run `$ make check-full`. Expected result: Make command should say OK."},
 
 	{"name": "Avocado source does not contain spelling errors",
 	 "description": "On your development machine, on a freshen Avocado source to be released, run `$ make spell`. Expected result: Make command should say OK."},
 
 	{"name": "Avocado RPM build",
-	 "description": "On your development machine, build the Avocado RPM packages using: `$ make rpm`. Expected result: SRPM and RPM files at `BUILD/RPM/avocado-x.y.z-r.distro.{src,noarch}.rpm`"},
+	 "description": "On your development machine, build the Avocado RPM packages using: `$ make rpm`. Expected result: SRPM and RPM files at `BUILD/RPM/python-avocado-x.y.z-r.distro.{src,noarch}.rpm`"},
 
 	{"name": "Avocado RPM lint",
-	 "description": "With the built RPMs, check if there are no packaging errors or warnings by running: `$ rpmlint BUILD/RPM/avocado-x.y.z-r.distro.noarch.rpm`.  Expected result: 1 packages and 0 specfiles checked; 0 errors, 0 warnings."},
+	 "description": "With the built RPMs, check if there are no packaging errors or warnings by running: `$ rpmlint BUILD/RPM/python-avocado-x.y.z-r.distro.noarch.rpm`.  Expected result: 1 packages and 0 specfiles checked; 0 errors, 0 warnings."},
 
 	{"name": "Avocado RPM install",
 	 "description": "On a fresh virtual machine, perform the installation of Avocado using the packages built on test 'Avocado RPM build' and the aexpect package from src or avocado repo. Also install and start the qemu-guest-agent."},
@@ -31,7 +31,7 @@
 	 "description": "On a web browser, open the previously generated  HTML report at `/tmp/report.html`. Verify that all the links such as `job-YYYY-MM-DD...` (under `Results Dir`), `1-/**/avocado/tests/**/examples/tests/passtest.py:PassTest.test` (under `Test ID`) and `debug.log` point to valid locations."},
 
 	{"name": "Avocado Server Source Checkout and Unittests",
-	 "description": "On the same virtual machine used during 'Avocado RPM install', checkout a copy of the avocado-server repository with `$ git clone git://github.com/avocado-framework/avocado-server.git`. Then install dependencies with `$ pip install -r requirements.txt`. Then finally run the unittests with `$ make check`. Expected result: `OK`"},
+	 "description": "On the same virtual machine used during 'Avocado RPM install', checkout a copy of the avocado-server repository with `$ git clone git://github.com/avocado-framework/avocado-server.git`. Then install dependencies with `$ pip install -r requirements.txt -r requirements-selftests.txt`. Then finally run the unittests with `$ make check`. Expected result: `OK`"},
 
 	{"name": "Avocado Server Run",
 	 "description": "On the same machine used during 'Avocado Server Source Checkout and Unittests', run the quick and dirty script to get it running `$ ./reset-and-run.sh`. Expected result: `Starting development server at http://0.0.0.0:9405`"},
@@ -40,7 +40,7 @@
 	 "description": "On the same machine used during 'Avocado Server Run', on another console, run `$ curl http://localhost:9405`. Expected result: json response"},
 
 	{"name": "Avocado Virt and VT Source Checkout",
-	 "description": "On a virtualization capable machine, checkout a copy of the avocado-vt, avocado-virt, avocado-virt-tests repositories with `$ git clone git://github.com/avocado-framework/avocado-vt.git`, `$ git clone git://github.com/avocado-framework/avocado-virt.git` and `$ git clone git://github.com/avocado-framework/avocado-virt-tests.git`. On the Avocado (non-virt) repo, run `make link`. Now run `$ avocado plugins`. Expected result: `virt`, `virt_bootstrap`, `vt`, `vt_bootstrap` and `vt_list` plugins enabled."},
+	 "description": "On a virtualization capable machine, checkout a copy of the avocado-vt, avocado-virt, avocado-virt-tests repositories with `$ git clone git://github.com/avocado-framework/avocado-vt.git`, `$ git clone git://github.com/avocado-framework/avocado-virt.git` and `$ git clone git://github.com/avocado-framework/avocado-virt-tests.git`. On the Avocado (non-virt) repo, run `make link`. Now run `$ avocado plugins`. Expected result: `virt`, `virt-bootstrap`, `vt`, `vt-bootstrap` and `vt-list` plugins enabled."},
 
 	{"name": "Avocado Virt Bootstrap",
 	 "description": "Now that the `virt_bootstrap` plugin and action `virt-bootstrap` is available run `$ avocado virt-bootstrap`. Expected result: `Your system appears to be all set to execute tests`"},

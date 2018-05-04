@@ -6,6 +6,9 @@ Result Formats
 A test runner must provide an assortment of ways to clearly communicate results
 to interested parties, be them humans or machines.
 
+.. note:: There are several optional result plugins, you can find them in
+   :ref:`result-plugins`.
+
 Results for human beings
 ------------------------
 
@@ -24,42 +27,15 @@ that is, the job and its test(s) results are constantly updated::
     $ avocado run sleeptest.py failtest.py synctest.py
     JOB ID    : 5ffe479262ea9025f2e4e84c4e92055b5c79bdc9
     JOB LOG   : $HOME/avocado/job-results/job-2014-08-12T15.57-5ffe4792/job.log
-    TESTS     : 3
      (1/3) sleeptest.py:SleepTest.test: PASS (1.01 s)
      (2/3) failtest.py:FailTest.test: FAIL (0.00 s)
      (3/3) synctest.py:SyncTest.test: PASS (1.98 s)
     RESULTS    : PASS 1 | ERROR 1 | FAIL 1 | SKIP 0 | WARN 0 | INTERRUPT 0
-    TESTS TIME : 3.17 s
+    JOB TIME   : 3.27 s
     JOB HTML  : $HOME/avocado/job-results/job-2014-08-12T15.57-5ffe4792/html/results.html
 
 The most important thing is to remember that programs should never need to parse
 human output to figure out what happened to a test job run.
-
-HTML report
-~~~~~~~~~~~
-
-As can be seen in the previous example, Avocado shows the path to an HTML
-report that will be generated as soon as the job finishes running::
-
-    $ avocado run sleeptest.py failtest.py synctest.py
-    ...
-    JOB HTML  : $HOME/avocado/job-results/job-2014-08-12T15.57-5ffe4792/html/results.html
-    ...
-
-You can also request that the report be opened automatically by using the
-``--open-browser`` option. For example::
-
-    $ avocado run sleeptest --open-browser
-
-Will show you the nice looking HTML results report right after ``sleeptest``
-finishes running.
-
-.. warning:: The HTML output is an optional plugin and has to be installed
-             separately as ``avocado-plugins-output-html`` RPM or by executing
-             ``cd optional_plugins/html && python setup.py install``
-             from avocado sources. Note it's enabled by default when using
-             avocado from sorces by ``make develop`` or ``make link``.
-
 
 Machine readable results
 ------------------------
@@ -112,16 +88,23 @@ output in the standard output of the runner, simply use::
 
 .. note:: The dash `-` in the option `--xunit`, it means that the xunit result
           should go to the standard output.
+.. note:: In case your tests produce very long outputs, you can limit the
+          number of embedded characters by
+          `--xunit-max-test-log-chars`. If the output in the log file is
+          longer it only attaches up-to max-test-log-chars characters
+          one half starting from the beginning of the content, the other
+          half from the end of the content.
 
-json
+JSON
 ~~~~
 
 `JSON <http://www.json.org/>`__ is a widely used data exchange format. The
-json Avocado plugin outputs job information, similarly to the xunit output
+JSON Avocado plugin outputs job information, similarly to the xunit output
 plugin::
 
     $ avocado run sleeptest.py failtest.py synctest.py --json -
     {
+        "cancel": 0,
         "debuglog": "/home/cleber/avocado/job-results/job-2016-08-09T13.53-10715c4/job.log",
         "errors": 0,
         "failures": 1,
@@ -136,9 +119,8 @@ plugin::
                 "logfile": "/home/cleber/avocado/job-results/job-2016-08-09T13.53-10715c4/test-results/1-sleeptest.py:SleepTest.test/debug.log",
                 "start": 1470761622.174918,
                 "status": "PASS",
-                "test": "1-sleeptest.py:SleepTest.test",
+                "id": "1-sleeptest.py:SleepTest.test",
                 "time": 1.0020360946655273,
-                "url": "1-sleeptest.py:SleepTest.test",
                 "whiteboard": ""
             },
             {
@@ -148,9 +130,8 @@ plugin::
                 "logfile": "/home/cleber/avocado/job-results/job-2016-08-09T13.53-10715c4/test-results/2-failtest.py:FailTest.test/debug.log",
                 "start": 1470761623.192334,
                 "status": "FAIL",
-                "test": "2-failtest.py:FailTest.test",
+                "id": "2-failtest.py:FailTest.test",
                 "time": 0.0011379718780517578,
-                "url": "2-failtest.py:FailTest.test",
                 "whiteboard": ""
             },
             {
@@ -160,9 +141,8 @@ plugin::
                 "logfile": "/home/cleber/avocado/job-results/job-2016-08-09T13.53-10715c4/test-results/3-synctest.py:SyncTest.test/debug.log",
                 "start": 1470761623.208165,
                 "status": "PASS",
-                "test": "3-synctest.py:SyncTest.test",
+                "id": "3-synctest.py:SyncTest.test",
                 "time": 2.4478960037231445,
-                "url": "3-synctest.py:SyncTest.test",
                 "whiteboard": ""
             }
         ],
@@ -198,8 +178,9 @@ Provides the basic `TAP <http://testanything.org/>`__ (Test Anything Protocol) r
 Silent result
 ~~~~~~~~~~~~~
 
-While not a very fancy result format, an application may want nothing but
-the exit status code from an Avocado test job run. Example::
+This result disables all stdout logging (while keeping the error messages
+being printed to stderr). One can then use the return code to learn about
+the result::
 
     $ avocado --silent run failtest.py
     $ echo $?
@@ -272,7 +253,7 @@ Implementing other result formats
 ---------------------------------
 
 If you are looking to implement a new machine or human readable output
-format, you can refer to :mod:`avocado.core.plugins.xunit` and use it as a
+format, you can refer to :mod:`avocado.plugins.xunit` and use it as a
 starting point.
 
 If your result is something that is produced at once, based on the
@@ -281,10 +262,11 @@ complete job outcome, you should create a new class that inherits from
 :meth:`avocado.core.plugin_interfaces.Result.render` method.
 
 But, if your result implementation is something that outputs
-information live before/after each test, have to implement the
-old-style interface.  Create a class that inherits from
-:class:`avocado.core.result.Result` and implements all public methods,
-that perform actions (write to a file/stream) for each test states.
+information live before/during/after tests, then the
+:class:`avocado.core.plugin_interfaces.ResultEvents` interface is to
+one to look at.  It will require you to implement the methods that
+will perform actions (write to a file/stream) for each of the defined
+events on a Job and test execution.
 
 You can take a look at :doc:`Plugins` for more information on how to
 write a plugin that will activate and execute the new result format.

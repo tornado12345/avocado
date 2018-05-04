@@ -44,7 +44,8 @@ Code example
 Let's say you want to write a plugin that adds a new subcommand to the test
 runner, ``hello``. This is how you'd do it::
 
-    from avocado.plugins.base import CLICmd
+    from avocado.core.output import LOG_JOB
+    from avocado.core.plugin_interfaces import CLICmd
 
 
     class HelloWorld(CLICmd):
@@ -53,13 +54,17 @@ runner, ``hello``. This is how you'd do it::
         description = 'The classical Hello World! plugin example.'
 
         def run(self, args):
-            print(self.description)
+            LOG_JOB.info(self.description)
 
-As you can see, this plugins inherits from :class:`avocado.plugins.base.CLICmd`.
+As you can see, this plugins inherits from :class:`avocado.core.plugin_interfaces.CLICmd`.
 This specific base class allows for the creation of new commands for the Avocado
 CLI tool. The only mandatory method to be implemented is :func:`run
-<avocado.plugins.base.CLICmd.run>` and it's the plugin main entry point.
-In this code example it will simply print the plugin's description.
+<avocado.core.plugin_interfaces.CLICmd.run>` and it's the plugin main entry point.
+
+This plugin uses :py:data:`avocado.core.output.LOG_JOB` to produce the hello
+world output in the Job log. One can also use
+:py:data:`avocado.core.output.LOG_UI` to produce output in the human readable
+output.
 
 Registering Plugins
 ~~~~~~~~~~~~~~~~~~~
@@ -176,7 +181,7 @@ Wrap Up
 
 We have briefly discussed the making of Avocado plugins. We recommend
 the `Stevedore documentation`_ and also a look at the
-:mod:`avocado.plugins.base` module for the various plugin interface definitions.
+:mod:`avocado.core.plugin_interfaces` module for the various plugin interface definitions.
 
 Some plugins examples are available in the `Avocado source tree`_, under ``examples/plugins``.
 
@@ -186,6 +191,6 @@ is the final "documentation" source.
 
 .. _Stevedore: https://github.com/openstack/stevedore
 .. _Stevedore documentation: http://docs.openstack.org/developer/stevedore/index.html
-.. _setuptools: https://pythonhosted.org/setuptools/
-.. _entry points: https://pythonhosted.org/setuptools/pkg_resources.html#entry-points
+.. _setuptools: https://setuptools.readthedocs.io/en/latest/
+.. _entry points: https://setuptools.readthedocs.io/en/latest/pkg_resources.html#entry-points
 .. _Avocado source tree: https://github.com/avocado-framework/avocado/tree/master/examples/plugins

@@ -164,9 +164,10 @@ class Probe(object):
         """
         if self.check_name_for_file_contains():
             if os.path.exists(self.CHECK_FILE):
-                for line in open(self.CHECK_FILE).readlines():
-                    if self.CHECK_FILE_CONTAINS in line:
-                        return self.CHECK_FILE_DISTRO_NAME
+                with open(self.CHECK_FILE) as check_file:
+                    for line in check_file:
+                        if self.CHECK_FILE_CONTAINS in line:
+                            return self.CHECK_FILE_DISTRO_NAME
 
     def check_version(self):
         """
@@ -185,12 +186,12 @@ class Probe(object):
         Returns the match result for the version regex on the file content
         """
         if self.check_version():
-            if os.path.exists(self.CHECK_FILE):
-                version_file_content = open(self.CHECK_FILE).read()
-            else:
+            if not os.path.exists(self.CHECK_FILE):
                 return None
 
-            return self.CHECK_VERSION_REGEX.match(version_file_content)
+            with open(self.CHECK_FILE) as version_file:
+                version_file_content = version_file.read()
+                return self.CHECK_VERSION_REGEX.match(version_file_content)
 
     def version(self):
         """
@@ -217,7 +218,7 @@ class Probe(object):
         release = UNKNOWN_DISTRO_RELEASE
         match = self._get_version_match()
         if match is not None:
-            if match.groups() > 1:
+            if len(match.groups()) > 1:
                 release = match.groups()[1]
         return release
 
@@ -301,10 +302,10 @@ class RedHatProbe(Probe):
     Probe with version checks for Red Hat Enterprise Linux systems
     """
     CHECK_FILE = '/etc/redhat-release'
-    CHECK_FILE_CONTAINS = 'Red Hat'
-    CHECK_FILE_DISTRO_NAME = 'redhat'
+    CHECK_FILE_CONTAINS = 'Red Hat Enterprise Linux'
+    CHECK_FILE_DISTRO_NAME = 'rhel'
     CHECK_VERSION_REGEX = re.compile(
-        r'Red Hat Enterprise Linux Server release (\d{1,2})\.(\d{1,2}).*')
+        r'Red Hat Enterprise Linux \w+ release (\d{1,2})\.(\d{1,2}).*')
 
 
 class CentosProbe(RedHatProbe):
@@ -315,7 +316,8 @@ class CentosProbe(RedHatProbe):
     CHECK_FILE = '/etc/redhat-release'
     CHECK_FILE_CONTAINS = 'CentOS'
     CHECK_FILE_DISTRO_NAME = 'centos'
-    CHECK_VERSION_REGEX = re.compile(r'CentOS.* release (\d{1,2})\.(\d{1,2}).*')
+    CHECK_VERSION_REGEX = re.compile(r'CentOS.* release '
+                                     r'(\d{1,2})\.(\d{1,2}).*')
 
 
 class FedoraProbe(RedHatProbe):
@@ -338,6 +340,49 @@ class DebianProbe(Probe):
     CHECK_FILE_DISTRO_NAME = 'debian'
 
 
+class SUSEProbe(Probe):
+
+    """
+    Simple probe for SUSE systems in general
+    """
+
+    CHECK_FILE = '/etc/os-release'
+    CHECK_FILE_CONTAINS = 'SUSE'
+    # this is the (incorrect) spelling used in python's platform
+    # and tests are looking for it in distro.name. So keep using it
+    CHECK_FILE_DISTRO_NAME = 'SuSE'
+
+    def get_distro(self):
+        distro = Probe.get_distro(self)
+
+        # if the default methods find SUSE, detect version
+        if not distro.name == self.CHECK_FILE_DISTRO_NAME:
+            return distro
+
+        # we need to check VERSION_ID, which is number - VERSION can
+        # be a string
+
+        # for openSUSE Tumbleweed this will be e.g. 20161225
+        # for openSUSE Leap this will be e.g. 42.2
+        # for SUSE Linux Enterprise this will be e.g. 12 or 12.2 (for SP2)
+        version_id_re = re.compile(r'VERSION_ID="([\d\.]*)"')
+        version_id = None
+
+        with open(self.CHECK_FILE) as check_file:
+            for line in check_file:
+                match = version_id_re.match(line)
+                if match:
+                    version_id = match.group(1)
+
+        if version_id:
+            version_parts = version_id.split('.')
+            distro.version = int(version_parts[0])
+            if len(version_parts) > 1:
+                distro.release = int(version_parts[1])
+
+        return distro
+
+
 #: the complete list of probes that have been registered
 REGISTERED_PROBES = []
 
@@ -354,6 +399,7 @@ register_probe(RedHatProbe)
 register_probe(CentosProbe)
 register_probe(FedoraProbe)
 register_probe(DebianProbe)
+register_probe(SUSEProbe)
 register_probe(StdLibProbe)
 
 

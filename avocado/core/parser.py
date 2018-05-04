@@ -17,13 +17,13 @@ Avocado application command line parsing.
 """
 
 import argparse
-import logging
+
+from six import iteritems
 
 from . import exit_codes
-from . import multiplexer
+from . import varianter
 from . import settings
-from . import tree
-from .output import BUILTIN_STREAMS, BUILTIN_STREAM_SETS
+from .output import BUILTIN_STREAMS, BUILTIN_STREAM_SETS, LOG_UI
 from .version import VERSION
 
 PROG = 'avocado'
@@ -37,9 +37,8 @@ class ArgumentParser(argparse.ArgumentParser):
     """
 
     def error(self, message):
-        log = logging.getLogger("avocado.app")
-        log.debug(self.format_help())
-        log.error("%s: error: %s", self.prog, message)
+        LOG_UI.debug(self.format_help())
+        LOG_UI.error("%s: error: %s", self.prog, message)
         self.exit(exit_codes.AVOCADO_FAIL)
 
     def _get_option_tuples(self, option_string):
@@ -82,8 +81,8 @@ class Parser(object):
         self.application.add_argument('--config', metavar='CONFIG_FILE',
                                       nargs='?',
                                       help='Use custom configuration from a file')
-        streams = (['"%s": %s' % _ for _ in BUILTIN_STREAMS.iteritems()] +
-                   ['"%s": %s' % _ for _ in BUILTIN_STREAM_SETS.iteritems()])
+        streams = (['"%s": %s' % _ for _ in iteritems(BUILTIN_STREAMS)] +
+                   ['"%s": %s' % _ for _ in iteritems(BUILTIN_STREAM_SETS)])
         streams = "; ".join(streams)
         self.application.add_argument('--show', action="store",
                                       type=lambda value: value.split(","),
@@ -123,12 +122,18 @@ class Parser(object):
             description='valid subcommands',
             help='subcommand help',
             dest='subcommand')
+        # On Python 2, required doesn't make a difference because a
+        # subparser is considered an unconsumed positional arguments,
+        # and not providing one will error with a "too few arguments"
+        # message.  On Python 3, required arguments are used instead.
+        # Unfortunately, there's no way to pass this as an option when
+        # constructing the sub parsers, but it is possible to set that
+        # option afterwards.
+        self.subcommands.required = True
 
         # Allow overriding default params by plugins
-        self.args.mux = multiplexer.Mux(getattr(self.args, "mux-debug", False))
-        # FIXME: Backward compatibility params, to be removed when 36 LTS is
-        # discontinued
-        self.args.default_avocado_params = tree.TreeNode()
+        variants = varianter.Varianter(getattr(self.args, "varianter_debug", False))
+        self.args.avocado_variants = variants
 
     def finish(self):
         """

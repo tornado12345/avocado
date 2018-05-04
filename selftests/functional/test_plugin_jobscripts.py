@@ -1,17 +1,16 @@
 import os
 import shutil
-import sys
 import tempfile
-
-if sys.version_info[:2] == (2, 6):
-    import unittest2 as unittest
-else:
-    import unittest
+import unittest
 
 from avocado.core import exit_codes
 from avocado.utils import process
 from avocado.utils import script
 
+BASEDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
+BASEDIR = os.path.abspath(BASEDIR)
+
+AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
 
 SCRIPT_PRE_TOUCH = """#!/bin/sh -e
 touch %s"""
@@ -50,6 +49,7 @@ class JobScriptsTest(unittest.TestCase):
         os.mkdir(self.pre_dir)
         self.post_dir = os.path.join(self.tmpdir, 'post.d')
         os.mkdir(self.post_dir)
+        os.chdir(BASEDIR)
 
     def test_pre_post(self):
         """
@@ -71,16 +71,17 @@ class JobScriptsTest(unittest.TestCase):
                                         SCRIPT_PRE_POST_CFG % (self.pre_dir,
                                                                self.post_dir))
         with config:
-            cmd = ('./scripts/avocado --config %s run --job-results-dir %s '
-                   '--sysinfo=off %s' % (config, self.tmpdir, test_check_touch))
+            cmd = ('%s --config %s run --job-results-dir %s '
+                   '--sysinfo=off %s'
+                   % (AVOCADO, config, self.tmpdir, test_check_touch))
             result = process.run(cmd)
 
         # Pre/Post scripts failures do not (currently?) alter the exit status
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
         self.assertNotIn('Pre job script "%s" exited with status "1"' % touch_script,
-                         result.stderr)
+                         result.stderr_text)
         self.assertNotIn('Post job script "%s" exited with status "1"' % rm_script,
-                         result.stderr)
+                         result.stderr_text)
 
     def test_status_non_zero(self):
         """
@@ -93,14 +94,15 @@ class JobScriptsTest(unittest.TestCase):
         config = script.TemporaryScript("non_zero.conf",
                                         SCRIPT_NON_ZERO_CFG % self.pre_dir)
         with config:
-            cmd = ('./scripts/avocado --config %s run --job-results-dir %s '
-                   '--sysinfo=off passtest.py' % (config, self.tmpdir))
+            cmd = ('%s --config %s run --job-results-dir %s '
+                   '--sysinfo=off passtest.py' % (AVOCADO, config,
+                                                  self.tmpdir))
             result = process.run(cmd)
 
         # Pre/Post scripts failures do not (currently?) alter the exit status
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
         self.assertEqual('Pre job script "%s" exited with status "1"\n' % non_zero_script,
-                         result.stderr)
+                         result.stderr_text)
 
     def test_non_existing_dir(self):
         """
@@ -115,15 +117,16 @@ class JobScriptsTest(unittest.TestCase):
         config = script.TemporaryScript("non_existing_dir.conf",
                                         SCRIPT_NON_EXISTING_DIR_CFG % self.pre_dir)
         with config:
-            cmd = ('./scripts/avocado --config %s run --job-results-dir %s '
-                   '--sysinfo=off passtest.py' % (config, self.tmpdir))
+            cmd = ('%s --config %s run --job-results-dir %s '
+                   '--sysinfo=off passtest.py' % (AVOCADO, config,
+                                                  self.tmpdir))
             result = process.run(cmd)
 
         # Pre/Post scripts failures do not (currently?) alter the exit status
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_ALL_OK)
-        self.assertIn('-job scripts has not been found', result.stderr)
+        self.assertIn(b'-job scripts has not been found', result.stderr)
         self.assertNotIn('Pre job script "%s" exited with status "1"' % non_zero_script,
-                         result.stderr)
+                         result.stderr_text)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)

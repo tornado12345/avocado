@@ -34,26 +34,109 @@ original base tree code and re-license under GPLv2+, given that GPLv3 and GPLv2
 """
 
 import collections
+import copy
 import itertools
 import locale
-import os
-import re
 
-from . import output
+from six import string_types, iteritems
 
 
-# Tags to remove node/value
-REMOVE_NODE = 0
-REMOVE_VALUE = 1
+class FilterSet(set):
+
+    """ Set of filters in standardized form """
+
+    @staticmethod
+    def __normalize(item):
+        if not item.endswith("/"):
+            item = item + "/"
+        return item
+
+    def add(self, item):
+        return super(FilterSet, self).add(self.__normalize(item))
+
+    def update(self, items):
+        return super(FilterSet, self).update([self.__normalize(item)
+                                              for item in items])
+
+    def __str__(self):
+        return 'FilterSet([%s])' % ', '.join(["'%s'" % i for i in self])
 
 
-class Control(object):  # Few methods pylint: disable=R0903
+class TreeEnvironment(dict):
 
-    """ Container used to identify node vs. control sequence """
+    """ TreeNode environment with values, origins and filters """
 
-    def __init__(self, code, value=None):
-        self.code = code
-        self.value = value
+    def __init__(self):
+        super(TreeEnvironment, self).__init__()     # values
+        self.origin = {}    # origins of the values
+        self.filter_only = FilterSet()   # list of filter_only
+        self.filter_out = FilterSet()    # list of filter_out
+
+    def copy(self):
+        cpy = TreeEnvironment()
+        cpy.update(self)
+        cpy.origin = copy.copy(self.origin)
+        cpy.filter_only = copy.copy(self.filter_only)
+        cpy.filter_out = copy.copy(self.filter_out)
+        return cpy
+
+    def __str__(self):
+        # Use __str__ instead of __repr__ to improve readability
+        if self:
+            _values = ["%s: %s" % _ for _ in iteritems(self)]
+            values = "{%s}" % ", ".join(_values)
+            _origin = ["%s: %s" % (key, node.path)
+                       for key, node in iteritems(self.origin)]
+            origin = "{%s}" % ", ".join(_origin)
+        else:
+            values = "{}"
+            origin = "{}"
+        return ",".join((values, origin, str(self.filter_only),
+                         str(self.filter_out)))
+
+
+class TreeNodeEnvOnly(object):
+
+    """
+    Minimal TreeNode-like class providing interface for AvocadoParams
+    """
+
+    def __init__(self, path, environment=None):
+        """
+        :param path: Path of this node (must not end with '/')
+        :param environment: List of pair/key/value items
+        """
+        self.name = path.rsplit("/")[-1]
+        self.path = path
+        self.environment = TreeEnvironment()
+        if environment:
+            self.__load_environment(environment)
+
+    def __load_environment(self, environment):
+        nodes = {}
+        for path, key, value in environment:
+            self.environment[key] = value
+            if path not in nodes:
+                nodes[path] = TreeNodeEnvOnly(path)
+            self.environment.origin[key] = nodes[path]
+
+    def __eq__(self, other):
+        if self.name != other.name:
+            return False
+        if self.path != other.path:
+            return False
+        if self.environment != other.environment:
+            return False
+        return True
+
+    def fingerprint(self):
+        return "%s%s" % (self.path, self.environment)
+
+    def get_environment(self):
+        return self.environment
+
+    def get_path(self):
+        return self.path
 
 
 class TreeNode(object):
@@ -63,18 +146,30 @@ class TreeNode(object):
     """
 
     def __init__(self, name='', value=None, parent=None, children=None):
+        """
+        :param name: a name for this node that will be used to define its
+                     path according to the name of its parents
+        :type name: str
+        :param value: a collection of keys and values that will be made into
+                      this node environment.
+        :type value: dict
+        :param parent: the node that is directly above this one in the tree
+                       structure
+        :type parent: :class:`TreeNode`
+        :param children: the nodes that are directly beneath this one in the
+                         tree structure
+        :type children: builtin.list
+        """
         if value is None:
             value = {}
         if children is None:
             children = []
         self.name = name
         self.value = value
+        self.filters = [], []  # This node's filters, full filters are in env
         self.parent = parent
         self.children = []
         self._environment = None
-        self.environment_origin = {}
-        self.ctrl = []
-        self.multiplex = None
         for child in children:
             self.add_child(child)
 
@@ -95,7 +190,7 @@ class TreeNode(object):
 
     def __eq__(self, other):
         """ Compares node to other node or string to name of this node """
-        if isinstance(other, str):  # Compare names
+        if isinstance(other, string_types):  # Compare names
             if self.name == other:
                 return True
         else:
@@ -103,6 +198,31 @@ class TreeNode(object):
                 if getattr(self, attr) != getattr(other, attr):
                     return False
             return True
+
+    def __ne__(self, other):
+        """ Inverted eq """
+        return not self == other
+
+    def __hash__(self):
+        values = []
+        for item in self.value:
+            try:
+                values.append(hash(item))
+            except TypeError:
+                values.append(hash(str(item)))
+        children = []
+        for item in self.children:
+            try:
+                children.append(hash(item))
+            except TypeError:
+                children.append(hash(str(item)))
+        return hash((self.name, ) + tuple(values) + tuple(children))
+
+    def fingerprint(self):
+        """
+        Reports string which represents the value of this node.
+        """
+        return "%s%s" % (self.path, self.environment)
 
     def add_child(self, node):
         """
@@ -126,29 +246,9 @@ class TreeNode(object):
         added as children (recursively they get either appended at the end
         or merged into existing node in the previous position.
         """
-        for ctrl in other.ctrl:
-            if isinstance(ctrl, Control):
-                if ctrl.code == REMOVE_NODE:
-                    remove = []
-                    regexp = re.compile(ctrl.value)
-                    for child in self.children:
-                        if regexp.match(child.name):
-                            remove.append(child)
-                    for child in remove:
-                        self.children.remove(child)
-                elif ctrl.code == REMOVE_VALUE:
-                    remove = []
-                    regexp = re.compile(ctrl.value)
-                    for key in self.value.iterkeys():
-                        if regexp.match(key):
-                            remove.append(key)
-                    for key in remove:
-                        self.value.pop(key, None)
-        if other.multiplex is True:
-            self.multiplex = True
-        elif other.multiplex is False:
-            self.multiplex = False
         self.value.update(other.value)
+        self.filters[0].extend(other.filters[0])
+        self.filters[1].extend(other.filters[1])
         for child in other.children:
             self.add_child(child)
 
@@ -210,10 +310,8 @@ class TreeNode(object):
         """ Get node environment (values + preceding envs) """
         if self._environment is None:
             self._environment = (self.parent.environment.copy()
-                                 if self.parent else {})
-            self.environment_origin = (self.parent.environment_origin.copy()
-                                       if self.parent else {})
-            for key, value in self.value.iteritems():
+                                 if self.parent else TreeEnvironment())
+            for key, value in iteritems(self.value):
                 if isinstance(value, list):
                     if (key in self._environment and
                             isinstance(self._environment[key], list)):
@@ -222,7 +320,9 @@ class TreeNode(object):
                         self._environment[key] = value
                 else:
                     self._environment[key] = value
-                self.environment_origin[key] = self
+                self._environment.origin[key] = self
+            self._environment.filter_only.update(self.filters[0])
+            self._environment.filter_out.update(self.filters[1])
         return self._environment
 
     def set_environment_dirty(self):
@@ -288,197 +388,6 @@ class TreeNode(object):
         return self
 
 
-def path_parent(path):
-    """
-    From a given path, return its parent path.
-
-    :param path: the node path as string.
-    :return: the parent path as string.
-    """
-    parent = path.rpartition('/')[0]
-    if not parent:
-        return '/'
-    return parent
-
-
-def apply_filters(tree, filter_only=None, filter_out=None):
-    """
-    Apply a set of filters to the tree.
-
-    The basic filtering is filter only, which includes nodes,
-    and the filter out rules, that exclude nodes.
-
-    Note that filter_out is stronger than filter_only, so if you filter out
-    something, you could not bypass some nodes by using a filter_only rule.
-
-    :param filter_only: the list of paths which will include nodes.
-    :param filter_out: the list of paths which will exclude nodes.
-    :return: the original tree minus the nodes filtered by the rules.
-    """
-    if filter_only is None:
-        filter_only = []
-    else:
-        filter_only = [_.rstrip('/') for _ in filter_only if _]
-    if filter_out is None:
-        filter_out = []
-    else:
-        filter_out = [_.rstrip('/') for _ in filter_out if _]
-    for node in tree.iter_children_preorder():
-        keep_node = True
-        for path in filter_only:
-            if path == '':
-                continue
-            if node.path == path:
-                keep_node = True
-                break
-            if node.parent and node.parent.path == path_parent(path):
-                keep_node = False
-                continue
-        for path in filter_out:
-            if path == '':
-                continue
-            if node.path == path:
-                keep_node = False
-                break
-        if not keep_node:
-            node.detach()
-    return tree
-
-#
-# Debug version of TreeNode with additional utilities.
-#
-
-
-class OutputValue(object):  # only container pylint: disable=R0903
-
-    """ Ordinary value with some debug info """
-
-    def __init__(self, value, node, srcyaml):
-        self.value = value
-        self.node = node
-        self.yaml = srcyaml
-
-    def __str__(self):
-        return "%s%s@%s:%s%s" % (self.value,
-                                 output.TERM_SUPPORT.LOWLIGHT,
-                                 self.yaml, self.node.path,
-                                 output.TERM_SUPPORT.ENDC)
-
-
-class OutputList(list):  # only container pylint: disable=R0903
-
-    """ List with some debug info """
-
-    def __init__(self, values, nodes, yamls):
-        super(OutputList, self).__init__(values)
-        self.nodes = nodes
-        self.yamls = yamls
-
-    def __add__(self, other):
-        """ Keep attrs separate in order to print the origins """
-        value = super(OutputList, self).__add__(other)
-        return OutputList(value,
-                          self.nodes + other.nodes,
-                          self.yamls + other.yamls)
-
-    def __str__(self):
-        color = output.TERM_SUPPORT.LOWLIGHT
-        cend = output.TERM_SUPPORT.ENDC
-        return ' + '.join("%s%s@%s:%s%s"
-                          % (_[0], color, _[1], _[2].path, cend)
-                          for _ in itertools.izip(self, self.yamls,
-                                                  self.nodes))
-
-
-class ValueDict(dict):  # only container pylint: disable=R0903
-
-    """ Dict which stores the origin of the items """
-
-    def __init__(self, srcyaml, node, values):
-        super(ValueDict, self).__init__()
-        self.yaml = srcyaml
-        self.node = node
-        self.yaml_per_key = {}
-        for key, value in values.iteritems():
-            self[key] = value
-
-    def __setitem__(self, key, value):
-        """ Store yaml_per_key and value """
-        # Merge is responsible to set `self.yaml` to current file
-        self.yaml_per_key[key] = self.yaml
-        return super(ValueDict, self).__setitem__(key, value)
-
-    def __getitem__(self, key):
-        """
-        This is debug run. Fake the results and return either
-        OutputValue (let's call it string) and OutputList. These
-        overrides the `__str__` and return string with origin.
-        :warning: Returned values are unusable in tests!
-        """
-        value = super(ValueDict, self).__getitem__(key)
-        origin = self.yaml_per_key.get(key)
-        if isinstance(value, list):
-            value = OutputList([value], [self.node], [origin])
-        else:
-            value = OutputValue(value, self.node, origin)
-        return value
-
-    def iteritems(self):
-        """ Slower implementation with the use of __getitem__ """
-        for key in self.iterkeys():
-            yield key, self[key]
-        raise StopIteration
-
-
-class TreeNodeDebug(TreeNode):  # only container pylint: disable=R0903
-
-    """
-    Debug version of TreeNodeDebug
-    :warning: Origin of the value is appended to all values thus it's not
-    suitable for running tests.
-    """
-
-    def __init__(self, name='', value=None, parent=None, children=None,
-                 srcyaml=None):
-        if value is None:
-            value = {}
-        if srcyaml:
-            srcyaml = os.path.relpath(srcyaml)
-        super(TreeNodeDebug, self).__init__(name,
-                                            ValueDict(srcyaml, self, value),
-                                            parent, children)
-        self.yaml = srcyaml
-
-    def merge(self, other):
-        """
-        Override origin with the one from other tree. Updated/Newly set values
-        are going to use this location as origin.
-        """
-        if hasattr(other, 'yaml') and other.yaml:
-            srcyaml = os.path.relpath(other.yaml)
-            # when we use TreeNodeDebug, value is always ValueDict
-            self.value.yaml_per_key.update(other.value.yaml_per_key)    # pylint: disable=E1101
-        else:
-            srcyaml = "Unknown"
-        self.yaml = srcyaml
-        self.value.yaml = srcyaml
-        return super(TreeNodeDebug, self).merge(other)
-
-
-def get_named_tree_cls(path):
-    """ Return TreeNodeDebug class with hardcoded yaml path """
-    class NamedTreeNodeDebug(TreeNodeDebug):    # pylint: disable=R0903
-
-        """ Fake class with hardcoded yaml path """
-
-        def __init__(self, name='', value=None, parent=None,
-                     children=None):
-            super(NamedTreeNodeDebug, self).__init__(name, value, parent,
-                                                     children,
-                                                     path.split(':', 1)[-1])
-    return NamedTreeNodeDebug
-
-
 def tree_view(root, verbose=None, use_utf8=None):
     """
     Generate tree-view of the given node
@@ -506,7 +415,7 @@ def tree_view(root, verbose=None, use_utf8=None):
         Generate this node's tree-view
         :return: list of lines
         """
-        if node.multiplex:
+        if getattr(node, "multiplex", None):
             down = charset['DoubleDown']
             down_right = charset['DoubleDownRight']
             right = charset['DoubleRight']
@@ -515,10 +424,18 @@ def tree_view(root, verbose=None, use_utf8=None):
             down_right = charset['DownRight']
             right = charset['Right']
         out = [node.name]
-        if verbose >= 2 and node.is_leaf:
-            values = node.environment.iteritems()
+        if verbose is not None and verbose >= 2 and node.is_leaf:
+            values = itertools.chain(iteritems(node.environment),
+                                     [("filter-only", _)
+                                      for _ in node.environment.filter_only],
+                                     [("filter-out", _)
+                                      for _ in node.environment.filter_out])
         elif verbose in (1, 3):
-            values = node.value.iteritems()
+            values = itertools.chain(iteritems(node.value),
+                                     [("filter-only", _)
+                                      for _ in node.filters[0]],
+                                     [("filter-out", _)
+                                      for _ in node.filters[1]])
         else:
             values = None
         if values:
@@ -559,7 +476,7 @@ def tree_view(root, verbose=None, use_utf8=None):
                    'DoubleDownRight': ' #== ',
                    'DoubleRight': ' #== ',
                    'Value': ' -> '}
-    if root.multiplex:
+    if getattr(root, "multiplex", None):
         down = charset['DoubleDown']
         down_right = charset['DoubleDownRight']
         right = charset['DoubleRight']
@@ -568,10 +485,10 @@ def tree_view(root, verbose=None, use_utf8=None):
         down_right = charset['DownRight']
         right = charset['Right']
     out = []
-    if (verbose >= 2) and root.is_leaf:
-        values = root.environment.iteritems()
+    if verbose is not None and verbose >= 2 and root.is_leaf:
+        values = iteritems(root.environment)
     elif verbose in (1, 3):
-        values = root.value.iteritems()
+        values = iteritems(root.value)
     else:
         values = None
     if values:

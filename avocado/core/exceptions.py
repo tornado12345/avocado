@@ -15,45 +15,6 @@
 """
 Exception classes, useful for tests, and other parts of the framework code.
 """
-from functools import wraps
-import types
-
-
-def fail_on(exceptions=None):
-    """
-    Fail the test when decorated function produces exception of the specified
-    type.
-
-    (For example, our method may raise IndexError on tested software failure.
-    We can either try/catch it or use this decorator instead)
-
-    :param exceptions: Tuple or single exception to be assumed as
-                       test fail [Exception]
-    :note: self.error and self.skip behavior remains intact
-    :note: To allow simple usage param "exceptions" must not be callable
-    """
-    func = False
-    if exceptions is None:
-        exceptions = Exception
-    elif isinstance(exceptions, types.FunctionType):     # @fail_on without ()
-        func = exceptions
-        exceptions = Exception
-
-    def decorate(func):
-        """ Decorator """
-        @wraps(func)
-        def wrap(*args, **kwargs):
-            """ Function wrapper """
-            try:
-                return func(*args, **kwargs)
-            except TestBaseException:
-                raise
-            except exceptions as details:
-                raise TestFail(str(details))
-        return wrap
-    if func:
-        return decorate(func)
-    return decorate
 
 
 class JobBaseException(Exception):
@@ -114,17 +75,6 @@ class TestError(TestBaseException):
     status = "ERROR"
 
 
-class NotATestError(TestBaseException):
-
-    """
-    Indicates that the file is not a test.
-
-    Causes: Non executable, non python file or python module without
-    an avocado test class in it.
-    """
-    status = "NOT_A_TEST"
-
-
 class TestNotFoundError(TestBaseException):
 
     """
@@ -139,14 +89,6 @@ class TestTimeoutInterrupted(TestBaseException):
     Indicates that the test did not finish before the timeout specified.
     """
     status = "INTERRUPTED"
-
-
-class TestTimeoutSkip(TestBaseException):
-
-    """
-    Indicates that the test is skipped due to a job timeout.
-    """
-    status = "SKIP"
 
 
 class TestInterruptedError(TestBaseException):
@@ -168,7 +110,7 @@ class TestAbortError(TestBaseException):
 class TestSkipError(TestBaseException):
 
     """
-    Indictates that the test is skipped.
+    Indicates that the test is skipped.
 
     Should be thrown when various conditions are such that the test is
     inappropriate. For example, inappropriate architecture, wrong OS version,
@@ -196,3 +138,12 @@ class TestWarn(TestBaseException):
     failure.
     """
     status = "WARN"
+
+
+class TestCancel(TestBaseException):
+    """
+    Indicates that a test was canceled.
+
+    Should be thrown when the cancel() test method is used.
+    """
+    status = "CANCEL"

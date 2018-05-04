@@ -137,11 +137,12 @@ class Partition(object):
         """
         # Try to match this device/mountpoint
         if filename:
-            for line in open(filename):
-                parts = line.split()
-                if parts[0] == self.device or parts[1] == self.mountpoint:
-                    return parts[1]    # The mountpoint where it's mounted
-            return None
+            with open(filename) as open_file:
+                for line in open_file:
+                    parts = line.split()
+                    if parts[0] == self.device or parts[1] == self.mountpoint:
+                        return parts[1]    # The mountpoint where it's mounted
+                return None
 
         # no specific file given, look in /proc/mounts
         res = self.get_mountpoint(filename='/proc/mounts')
@@ -174,7 +175,7 @@ class Partition(object):
 
         if self.mkfs_flags:
             args += ' ' + self.mkfs_flags
-        if fstype == 'xfs':
+        if fstype in ['xfs', 'btrfs']:
             args += ' -f'
 
         if self.loop:
@@ -230,7 +231,7 @@ class Partition(object):
             if self.device in self.list_mount_devices():
                 raise PartitionError(self, "Attempted to mount mounted device")
             if mountpoint in self.list_mount_points():
-                raise PartitionError(self, "Attempted to mount busy mountpoint")
+                raise PartitionError(self, "Attempted to mount busy directory")
             if not os.path.isdir(mountpoint):
                 os.makedirs(mountpoint)
             try:

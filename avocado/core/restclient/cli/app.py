@@ -16,13 +16,13 @@ This is the main entry point for the rest client cli application
 """
 
 import importlib
-import logging
 import sys
 import types
 
 from . import parser
 from .. import connection
 from ... import exit_codes
+from ...output import LOG_UI
 
 
 __all__ = ['App']
@@ -48,7 +48,7 @@ class App(object):
         self.connection = None
         self.parser = parser.Parser()
         self.parser.add_arguments_on_all_modules()
-        self.log = logging.getLogger("avocado.app")
+        self.log = LOG_UI
 
     def initialize_connection(self):
         """
@@ -62,13 +62,13 @@ class App(object):
                 password=self.args.password)
         except connection.InvalidConnectionError:
             self.log.error("Error: could not connect to the server")
-            sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+            sys.exit(exit_codes.AVOCADO_FAIL)
         except connection.InvalidServerVersionError:
             self.log.error("REST server version is higher than "
                            "than this client can support.")
             self.log.error("Please use a more recent version "
                            "of the REST client application.")
-            sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+            sys.exit(exit_codes.AVOCADO_FAIL)
 
     def dispatch_action(self):
         """
@@ -116,7 +116,7 @@ class App(object):
             self.args = self.parser.parse_args()
             action_result = self.dispatch_action()
         except KeyboardInterrupt:
-            print 'Interrupted'
+            print('Interrupted')
 
         if isinstance(action_result, int):
             sys.exit(action_result)

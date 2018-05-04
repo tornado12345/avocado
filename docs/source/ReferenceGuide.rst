@@ -66,25 +66,31 @@ By definition, a Test Name is a Test Reference, but the
 reciprocal is not necessarily true, as the latter can represent
 more than one test.
 
+Examples of Test Names::
+
+   '/bin/true'
+   'passtest.py:Passtest.test'
+   'file:///tmp/passtest.py:Passtest.test'
+   'multiple_tests.py:MultipleTests.test_hello'
+   'type_specific.io-github-autotest-qemu.systemtap_tracing.qemu.qemu_free'
+
 
 Variant IDs
 -----------
 
-The multiplexer component creates different sets of variables
+The varianter component creates different sets of variables
 (known as "variants"), to allow tests to be run individually in
 each of them.
 
 A Variant ID is an arbitrary and abstract string created by the
-multiplexer to identify each variant. It should be unique per
-variant inside a set. In other words, the multiplexer generates a
-set of variants, identified by unique IDs.
+varianter plugin to identify each variant. It should be unique per
+variant inside a set. In other words, the varianter plugin generates
+a set of variants, identified by unique IDs.
 
-A simpler implementation of the multiplexer uses serial integers
+A simpler implementation of the varianter uses serial integers
 as Variant IDs. A more sophisticated implementation could
 generate Variant IDs with more semantic, potentially representing
 their contents.
-
-.. note:: The multiplexer supports serialized variant IDs only
 
 
 Test ID
@@ -110,23 +116,21 @@ Syntax::
 
    <unique-id>-<test-name>[;<variant-id>]
 
-Examples of test-names::
+Example of Test IDs::
 
-   '/bin/true'
-   '/bin/grep foobar /etc/passwd'
-   'passtest.py:Passtest.test'
-   'file:///tmp/passtest.py:Passtest.test'
-   'multiple_tests.py:MultipleTests.test_hello'
-   'type_specific.io-github-autotest-qemu.systemtap_tracing.qemu.qemu_free'
-
+   '1-/bin/true'
+   '2-passtest.py:Passtest.test;quiet-'
+   '3-file:///tmp/passtest.py:Passtest.test'
+   '4-multiple_tests.py:MultipleTests.test_hello;maximum_debug-df2f'
+   '5-type_specific.io-github-autotest-qemu.systemtap_tracing.qemu.qemu_free'
 
 .. _test-types:
 
 Test Types
 ==========
 
-Avocado at its simplest configuration can run two different types of tests [#f1]_. You can mix
-and match those in a single job.
+Avocado at its simplest configuration can run three different types of tests
+[#f1]_. You can mix and match those in a single job.
 
 Instrumented
 ------------
@@ -143,6 +147,18 @@ including logging, test result status and other more sophisticated test APIs.
 Test statuses ``PASS``, ``WARN``, ``START`` and ``SKIP`` are considered as
 successful builds. The ``ABORT``, ``ERROR``, ``FAIL``, ``ALERT``, ``RUNNING``,
 ``NOSTATUS`` and ``INTERRUPTED`` are considered as failed ones.
+
+Python unittest
+---------------
+
+The discovery of classical python unittest is also supported, although unlike
+python unittest we still use static analysis to get individual tests so
+dynamically created cases are not recognized. Also note that test result SKIP
+is reported as CANCEL in Avocado as SKIP test meaning differs from our
+definition. Apart from that there should be no surprises when running
+unittests via Avocado.
+
+.. _test_type_simple:
 
 Simple
 ------
@@ -357,14 +373,162 @@ Test execution instances specification
 The instances should have:
 
 1) A top level human readable ``job.log``, with job debug information
-2) A ``sysinfo`` subdir, with sub directories ``pre`` and ``post``, that store
-   sysinfo files pre test and post test, respectively.
+2) A ``sysinfo`` subdir, with sub directories ``pre``, ``post`` and
+   ``profile`` that store sysinfo files pre test, post test and
+   profiling info while the test was running, respectively.
 3) A ``data`` subdir, where the test can output a number of files if necessary.
 
-.. [#f1] Avocado plugins can introduce additional test types.
 
-Job Pre and Post Scripts
-========================
+Test execution environment
+--------------------------
+
+Each test is executed in a separate process.  Due to how the
+underlying operating system works, a lot of the attributes of the
+parent process (the Avocado test **runner**) are passed down to the
+test process.
+
+On GNU/Linux systems, a child process should be *"an exact duplicate
+of the parent process, except"* some items that are documented in
+the ``fork(2)`` man page.
+
+Besides those operating system exceptions, the Avocado test runner
+changes the test process in the following ways:
+
+1) The standard input (``STDIN``) is set to a :data:`null device
+   <os.devnull>`.  This is truth both for :data:`sys.stdin` and for
+   file descriptor ``0``.  Both will point to the same open null
+   device file.
+
+2) The standard output (``STDOUT``), as in :data:`sys.stdout`, is
+   redirected so that it doesn't interfere with the test runner's own
+   output.  All content written to the test's :data:`sys.stdout` will
+   be available in the logs under the ``output`` prefix.
+
+   .. warning:: The file descriptor ``1`` (AKA ``/dev/stdout``, AKA
+                ``/proc/self/fd/1``, etc) is **not** currently
+                redirected for INSTRUMENTED tests.  Any attempt to
+                write directly to the file descriptor will interfere
+                with the runner's own output stream.  This behavior
+                will be addressed in a future version.
+
+3) The standard error (``STDERR``), as in :data:`sys.stderr`, is
+   redirected so that it doesn't interfere with the test runner's own
+   errors.  All content written to the test's :data:`sys.stderr` will
+   be available in the logs under the ``output`` prefix.
+
+   .. warning:: The file descriptor ``2`` (AKA ``/dev/stderr``, AKA
+                ``/proc/self/fd/2``, etc) is **not** currently
+                redirected for INSTRUMENTED tests.  Any attempt to
+                write directly to the file descriptor will interfere
+                with the runner's own error stream.  This behavior
+                will be addressed in a future version.
+
+4) A custom handler for signal ``SIGTERM`` which will simply raise an
+   exception (with the appropriate message) to be handled by the
+   Avocado test runner, stating the fact that the test was interrupted
+   by such a signal.
+
+   .. tip:: By following the backtrace that is given alongside the in
+            the test log (look for ``RuntimeError: Test interrupted
+            by SIGTERM``) a user can quickly grasp at which point the
+            test was interrupted.
+
+   .. note:: If the test handles ``SIGTERM`` differently and doesn't
+             finish the test process quickly enough, it will receive
+             then a ``SIGKILL`` which is supposed to definitely end
+             the test process.
+
+5) A number of :ref:`environment variables
+   <environment-variables-for-tests>` that are set by Avocado, all
+   prefixed with ``AVOCADO_``.
+
+If you want to see for yourself what is described here, you may want
+to run the example test ``test_env.py`` and examine its log messages.
+
+Pre and post plugins
+====================
+
+Avocado provides interfaces with which custom plugins can register to
+be called at various times.  For instance, it's possible to trigger
+custom actions before and after the execution of a :class:`job
+<avocado.core.job.Job>`, or before and after the execution of the
+tests from a job :data:`test suite <avocado.core.job.Job.test_suite>`.
+
+Let's discuss each interface briefly.
+
+Before and after jobs
+---------------------
+
+Avocado supports plug-ins which are (guaranteed to be) executed before the
+first test and after all tests finished. The interfaces are
+:class:`avocado.core.plugin_interfaces.JobPre` and
+:class:`avocado.core.plugin_interfaces.JobPost`, respectively.
+
+The :meth:`pre <avocado.core.plugin_interfaces.JobPre.pre>` method of
+each installed plugin of type ``job.prepost`` will be called by the
+``run`` command, that is, anytime an ``avocado run
+<valid_test_reference>`` command is executed.
+
+.. note:: Conditions such as the :exc:`SystemExit` or
+          :exc:`KeyboardInterrupt` execeptions being raised can
+          interrupt the execution of those plugins.
+
+Then, immediately after that, the job's :meth:`run
+<avocado.core.job.Job.run>` method is called, which attempts to run
+all job phases, from test suite creation to test execution.
+
+Unless a :exc:`SystemExit` or :exc:`KeyboardInterrupt` is raised, or
+yet another major external event (like a system condition that Avocado
+can not control) it will attempt to run the :meth:`post
+<avocado.core.plugin_interfaces.JobPre.post>` methods of all the
+installed plugins of type ``job.prepost``.  This even includes job
+executions where the :meth:`pre
+<avocado.core.plugin_interfaces.JobPre.pre>` plugin executions were
+interrupted.
+
+Before and after the execution of tests
+---------------------------------------
+
+If you followed the previous section, you noticed that the job's
+:meth:`run <avocado.core.job.Job.run>` method was said to run all the
+test phases.  Here's a sequence of the job phases:
+
+1) :meth:`Creation of the test suite <avocado.core.job.Job.create_test_suite>`
+2) :meth:`Pre tests hook <avocado.core.job.Job.pre_tests>`
+3) :meth:`Tests execution <avocado.core.job.Job.run_tests>`
+4) :meth:`Post tests hook <avocado.core.job.Job.post_tests>`
+
+Plugin writers can have their own code called at Avocado during a job
+by writing a that will be called at phase number 2 (``pre_tests``) by
+writing a method according to the
+:meth:`avocado.core.plugin_interfaces.JobPreTests` interface.
+Accordingly, plugin writers can have their own called at phase number
+4 (``post_tests``) by writing a method according to the
+:meth:`avocado.core.plugin_interfaces.JobPostTests` interface.
+
+Note that there's no guarantee that all of the first 3 job phases will
+be executed, so a failure in phase 1 (``create_test_suite``), may
+prevent the phase 2 (``pre_tests``) and/or 3 (``run_tests``) from from
+being executed.
+
+Now, no matter what happens in the *attempted execution* of job phases
+1 through 3, job phase 4 (``post_tests``) will be *attempted to be
+executed*.  To make it extra clear, as long as the Avocado test runner
+is still in execution (that is, has not been terminated by a system
+condition that it can not control), it will execute plugin's
+``post_tests`` methods.
+
+As a concrete example, a plugin' ``post_tests`` method would not be
+executed after a ``SIGKILL`` is sent to the Avocado test runner on
+phases 1 through 3, because the Avocado test runner would be promptly
+interrupted.  But, a ``SIGTERM`` and ``KeyboardInterrupt`` sent to the
+Avocado test runner under phases 1 though 3 would still cause the test
+runner to run ``post_tests`` (phase 4).  Now, if during phase 4 a
+``KeyboardInterrupt`` or ``SystemExit`` is received, the remaining
+plugins' ``post_tests`` methods will **NOT** be executed.
+
+Jobscripts plugin
+-----------------
 
 Avocado ships with a plugin (installed by default) that allows running
 scripts before and after the actual execution of Jobs.  A user can be
@@ -373,7 +537,7 @@ been run, and when the "post" scripts are run, all the tests in a
 given job have already finished running.
 
 Configuration
--------------
+^^^^^^^^^^^^^
 
 By default, the script directory location is::
 
@@ -410,7 +574,7 @@ section:
   pre or post) exits with non-zero status
 
 Script Execution Environment
-----------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 All scripts are run in separate process with some environment
 variables set.  These can be used in your scripts in any way you wish:
@@ -468,3 +632,73 @@ function, positional arguments and keyword arguments will be
 registered, not matter how many times they're attempted to be
 registered. For more information check
 :meth:`avocado.utils.data_structures.CallbackRegister.register`.
+
+.. _docstring-directive-rules:
+
+Docstring Directives Rules
+==========================
+
+Avocado INSTRUMENTED tests, those written in Python and using the
+:class:`avocado.Test` API, can make use of special directives
+specified as docstrings.
+
+To be considered valid, the docstring must match this pattern:
+:data:`avocado.core.safeloader.DOCSTRING_DIRECTIVE_RE_RAW`.
+
+An Avocado docstring directive has two parts:
+
+ 1) The marker, which is the literal string ``:avocado:``.
+
+ 2) The content, a string that follows the marker, separated by at
+    least one white space or tab.
+
+The following is a list of rules that makes a docstring directive
+be a valid one:
+
+ * It should start with ``:avocado:``, which is the docstring
+   directive "marker"
+
+ * At least one whitespace or tab must follow the marker and preceed
+   the docstring directive "content"
+
+ * The "content", which follows the marker and the space, must begin
+   with an alphanumeric character, that is, characters within "a-z",
+   "A-Z" or "0-9".
+
+ * After at least one alphanumeric character, the content may contain
+   the following special symbols too: ``_``, ``,``, ``=`` and ``:``.
+
+ * An end of string (or end of line) must immediately follow the
+   content.
+
+.. _signal_handlers:
+
+Signal Handlers
+===============
+
+Avocado normal operation is related to run code written by
+users/test-writers. It means the test code can carry its own handlers
+for different signals or even ignore then. Still, as the code is being
+executed by Avocado, we have to make sure we will finish all the
+subprocesses we create before ending our execution.
+
+Signals sent to the Avocado main process will be handled as follows:
+
+- SIGSTP/Ctrl+Z: On SIGSTP, Avocado will pause the execution of the
+  subprocesses, while the main process will still be running,
+  respecting the timeout timer and waiting for the subprocesses to
+  finish. A new SIGSTP will make the subprocesses to resume the
+  execution.
+- SIGINT/Ctrl+C: This signal will be forwarded to the test process and
+  Avocado will wait until it's finished. If the test process does not
+  finish after receiving a SIGINT, user can send a second SIGINT (after
+  the 2 seconds ignore period). The second SIGINT will make Avocado
+  to send a SIGKILL to the whole subprocess tree and then complete the
+  main process execution.
+- SIGTERM: This signal will make Avocado to terminate immediately. A
+  SIGKILL will be sent to the whole subprocess tree and the main process
+  will exit without completing the execution. Notice that it's a
+  best-effort attempt, meaning that in case of fork-bomb, newly created
+  processes might still be left behind.
+
+.. [#f1] Avocado plugins can introduce additional test types.

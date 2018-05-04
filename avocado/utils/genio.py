@@ -20,6 +20,8 @@ import logging
 import os
 import time
 
+from six.moves import input
+
 from . import path as utils_path
 
 log = logging.getLogger('avocado.test')
@@ -27,6 +29,13 @@ log = logging.getLogger('avocado.test')
 
 _open_log_files = {}
 _log_file_dir = os.environ.get('TMPDIR', '/tmp')
+
+
+class GenIOError(Exception):
+    """
+    Base Exception Class for all IO exceptions
+    """
+    pass
 
 
 def log_line(filename, line):
@@ -92,7 +101,7 @@ def ask(question, auto=False):
     if auto:
         log.info("%s (y/n) y" % question)
         return "y"
-    return raw_input("%s (y/n) " % question)
+    return input("%s (y/n) " % question)
 
 
 def read_file(filename):
@@ -174,3 +183,21 @@ def write_one_line(filename, line):
     :type line: str
     """
     write_file(filename, line.rstrip('\n') + '\n')
+
+
+def write_file_or_fail(filename, data):
+    """
+    Write to a file and raise exception on write failure
+
+    :param filename: Path to file
+    :type filename: str
+    :param data: Data to be written to file
+    :type data: str
+    :raises GenIOError: On write Failure
+    """
+    fd = os.open(filename, os.O_WRONLY)
+    try:
+        os.write(fd, data)
+    except OSError as details:
+        raise GenIOError("The write to %s failed: %s" % (
+                         filename, details))

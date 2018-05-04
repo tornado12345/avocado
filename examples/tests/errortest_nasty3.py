@@ -19,13 +19,15 @@ class FailTest(Test):
 
     """
     This test raises old-style-class exception
+
+    :avocado: tags=failure_expected
     """
 
     def test(self):
         """
         Avocado should report this as TestError.
         """
-        raise NastyException("Nasty-string-like-exception")
+        raise NastyException("Nasty-string-like-exception")   # pylint: disable=E0710
 
 
 if __name__ == "__main__":
