@@ -31,6 +31,7 @@ from six import iteritems
 from avocado.core import exit_codes
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLI, Varianter
+from avocado.utils import astring
 
 from . import mux
 
@@ -66,11 +67,6 @@ class _BaseLoader(Loader):
                            lambda *_: mux.Control(YAML_FILTER_OUT))
 
 
-class Value(tuple):     # Few methods pylint: disable=R0903
-
-    """Used to mark values to simplify checking for node vs. value"""
-
-
 class ListOfNodeObjects(list):     # Few methods pylint: disable=R0903
 
     """
@@ -78,63 +74,113 @@ class ListOfNodeObjects(list):     # Few methods pylint: disable=R0903
     """
 
 
-class MappingDict(dict):
+def _normalize_path(path):
+    """
+    End the path with single '/'
 
-    """Object representing mapping"""
+    :param path: original path
+    :type path: str
+    :returns: path with trailing '/', or None when empty path
+    :rtype: str or None
+    """
+    if not path:
+        return
+    if path[-1] != '/':
+        path += '/'
+    return path
+
+
+def _handle_control_tag(path, cls_node, node, value):
+    """
+    Handling of most YAML control tags (all but "!using")
+
+    :param path: path on the YAML
+    :type path: str
+    :param cls_node: the class of the node
+    :type cls_node: :class:`avocado.core.tree.TreeNode` or similar
+    :param node: the node in which to handle control tags
+    :type node: instance of :class:`avocado.core.tree.TreeNode` or similar
+    :param value: the value of the node
+    """
+    if value[0].code == YAML_INCLUDE:
+        # Include file
+        ypath = value[1]
+        if not os.path.isabs(ypath):
+            ypath = os.path.join(os.path.dirname(path), ypath)
+        if not os.path.exists(ypath):
+            raise ValueError("File '%s' included from '%s' does not "
+                             "exist." % (ypath, path))
+        node.merge(_create_from_yaml('/:' + ypath, cls_node))
+    elif value[0].code in (YAML_REMOVE_NODE, YAML_REMOVE_VALUE):
+        value[0].value = value[1]   # set the name
+        node.ctrl.append(value[0])    # add "blue pill" of death
+    elif value[0].code == YAML_MUX:
+        node.multiplex = True
+    elif value[0].code == YAML_FILTER_ONLY:
+        new_value = _normalize_path(value[1])
+        if new_value:
+            node.filters[0].append(new_value)
+    elif value[0].code == YAML_FILTER_OUT:
+        new_value = _normalize_path(value[1])
+        if new_value:
+            node.filters[1].append(new_value)
+
+
+def _handle_control_tag_using(path, name, using, value):
+    """
+    Handling of the "!using" YAML control tag
+
+    :param path: path on the YAML
+    :type path: str
+    :param name: name to be applied in the "!using" tag
+    :type name: str
+    :param using: whether using is already being used
+    :type using: bool
+    :param value: the value of the node
+    """
+    if using:
+        raise ValueError("!using can be used only once per "
+                         "node! (%s:%s)" % (path, name))
+    using = value
+    if using[0] == '/':
+        using = using[1:]
+    if using[-1] == '/':
+        using = using[:-1]
+    return using
+
+
+def _apply_using(name, cls_node, using, node):
+    """
+    Create the structure defined by "!using" and return the new root
+
+    :param name: the tag name to have the "!using" applied to
+    :type name: str
+    :param cls_node: the class of the node
+    :type cls_node: :class:`avocado.core.tree.TreeNode` or similar
+    :param using: the new location to put the tag into
+    :type using: bool
+    :param node: the node in which to handle control tags
+    :type node: instance of :class:`avocado.core.tree.TreeNode` or similar
+    """
+    if name is not '':
+        for name in using.split('/')[::-1]:
+            node = cls_node(name, children=[node])
+    else:
+        using = using.split('/')[::-1]
+        node.name = using.pop()
+        while True:
+            if not using:
+                break
+            name = using.pop()  # 'using' is list pylint: disable=E1101
+            node = cls_node(name, children=[node])
+        node = cls_node('', children=[node])
+    return node
 
 
 def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
     """Create tree structure from yaml stream"""
     def tree_node_from_values(name, values):
         """Create `name` node and add values"""
-        def handle_control_tag(node, value):
-            """Handling of YAML tags (except of !using)"""
-            def normalize_path(path):
-                """End the path with single '/', None when empty path"""
-                if not path:
-                    return
-                if path[-1] != '/':
-                    path += '/'
-                return path
-
-            if value[0].code == YAML_INCLUDE:
-                # Include file
-                ypath = value[1]
-                if not os.path.isabs(ypath):
-                    ypath = os.path.join(os.path.dirname(path), ypath)
-                if not os.path.exists(ypath):
-                    raise ValueError("File '%s' included from '%s' does not "
-                                     "exist." % (ypath, path))
-                node.merge(_create_from_yaml('/:' + ypath, cls_node))
-            elif value[0].code == YAML_REMOVE_NODE:
-                value[0].value = value[1]   # set the name
-                node.ctrl.append(value[0])    # add "blue pill" of death
-            elif value[0].code == YAML_REMOVE_VALUE:
-                value[0].value = value[1]   # set the name
-                node.ctrl.append(value[0])
-            elif value[0].code == YAML_MUX:
-                node.multiplex = True
-            elif value[0].code == YAML_FILTER_ONLY:
-                new_value = normalize_path(value[1])
-                if new_value:
-                    node.filters[0].append(new_value)
-            elif value[0].code == YAML_FILTER_OUT:
-                new_value = normalize_path(value[1])
-                if new_value:
-                    node.filters[1].append(new_value)
-
-        def handle_control_tag_using(name, using, value):
-            """Handling of the !using tag"""
-            if using:
-                raise ValueError("!using can be used only once per "
-                                 "node! (%s:%s)" % (path, name))
-            using = value
-            if using[0] == '/':
-                using = using[1:]
-            if using[-1] == '/':
-                using = using[:-1]
-            return using
-
         def node_content_from_node(node, values, using):
             """Processes node values into the current node content"""
             for value in values:
@@ -142,12 +188,13 @@ def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
                     node.add_child(value)
                 elif isinstance(value[0], mux.Control):
                     if value[0].code == YAML_USING:
-                        using = handle_control_tag_using(name, using, value[1])
+                        using = _handle_control_tag_using(path, name, using, value[1])
                     else:
-                        handle_control_tag(node, value)
+                        _handle_control_tag(path, cls_node, node, value)
                 elif isinstance(value[1], collections.OrderedDict):
-                    node.add_child(tree_node_from_values(str(value[0]),
-                                                         value[1]))
+                    child = tree_node_from_values(astring.to_text(value[0]),
+                                                  value[1])
+                    node.add_child(child)
                 else:
                     node.value[value[0]] = value[1]
             return using
@@ -157,9 +204,9 @@ def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
             for key, value in iteritems(values):
                 if isinstance(key, mux.Control):
                     if key.code == YAML_USING:
-                        using = handle_control_tag_using(name, using, value)
+                        using = _handle_control_tag_using(path, name, using, value)
                     else:
-                        handle_control_tag(node, [key, value])
+                        _handle_control_tag(path, cls_node, node, [key, value])
                 elif (isinstance(value, collections.OrderedDict) or
                       value is None):
                     node.add_child(tree_node_from_values(key, value))
@@ -167,24 +214,8 @@ def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
                     node.value[key] = value
             return using
 
-        def apply_using(name, using, node):
-            '''Create the structure defined by using and return the new root'''
-            if name is not '':
-                for name in using.split('/')[::-1]:
-                    node = cls_node(name, children=[node])
-            else:
-                using = using.split('/')[::-1]
-                node.name = using.pop()
-                while True:
-                    if not using:
-                        break
-                    name = using.pop()  # 'using' is list pylint: disable=E1101
-                    node = cls_node(name, children=[node])
-                node = cls_node('', children=[node])
-            return node
-
         # Initialize the node
-        node = cls_node(str(name))
+        node = cls_node(astring.to_text(name))
         if not values:
             return node
         using = ''
@@ -197,7 +228,7 @@ def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
 
         # Prefix nodes if tag "!using" was used
         if using:
-            node = apply_using(name, using, node)
+            node = _apply_using(name, cls_node, using, node)
         return node
 
     def mapping_to_tree_loader(loader, node, looks_like_node=False):
@@ -228,9 +259,9 @@ def _create_from_yaml(path, cls_node=mux.MuxTreeNode):
             if isinstance(values, ListOfNodeObjects):   # New node from list
                 objects.append(tree_node_from_values(name, values))
             elif values is None:            # Empty node
-                objects.append(cls_node(str(name)))
+                objects.append(cls_node(astring.to_text(name)))
             else:                           # Values
-                objects.append(Value((name, values)))
+                objects.append((name, values))
         return objects
 
     def mux_loader(loader, obj):
@@ -329,10 +360,11 @@ def create_from_yaml(paths, debug=False):
             merge(data, path)
     # Yaml can raise IndexError on some files
     except (yaml.YAMLError, IndexError) as details:
-        if 'mapping values are not allowed in this context' in str(details):
-            details = ("%s\nMake sure !tags and colons are separated by a "
-                       "space (eg. !include :)" % details)
-        msg = "Invalid multiplex file '%s': %s" % (path, details)
+        if (u'mapping values are not allowed in this context' in
+                astring.to_text(details)):
+            details = (u"%s\nMake sure !tags and colons are separated by a "
+                       u"space (eg. !include :)" % details)
+        msg = u"Invalid multiplex file '%s': %s" % (path, details)
         raise IOError(2, msg, path)
     return data
 
@@ -387,6 +419,7 @@ class YamlToMux(mux.MuxPlugin, Varianter):
 
     def initialize(self, args):
         debug = getattr(args, "varianter_debug", False)
+
         if debug:
             data = mux.MuxTreeNodeDebug()
         else:

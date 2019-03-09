@@ -1,14 +1,16 @@
 import os
 import shutil
 import tempfile
-import unittest
-try:
-    from unittest import mock
-except ImportError:
-    import mock
+import unittest.mock
 
 from avocado.core import test, exceptions
 from avocado.utils import astring, script
+
+from .. import setup_avocado_loggers
+
+
+setup_avocado_loggers()
+
 
 PASS_SCRIPT_CONTENTS = """#!/bin/sh
 true
@@ -98,12 +100,12 @@ class TestClassTestUnit(unittest.TestCase):
 
     def test_data_dir(self):
         """
-        Tests that a valid datadir exists following the test filename
+        Checks `get_data()` won't report fs-unfriendly data dir name
         """
         max_length_name = os.path.join(self.tmpdir, "a" * 250)
         tst = self._get_fake_filename_test(max_length_name)
         self.assertEqual(os.path.join(self.tmpdir, max_length_name + ".data"),
-                         tst.datadir)
+                         tst.get_data('', 'file', False))
 
     def test_no_data_dir(self):
         """
@@ -111,21 +113,20 @@ class TestClassTestUnit(unittest.TestCase):
         """
         above_limit_name = os.path.join(self.tmpdir, "a" * 251)
         tst = self._get_fake_filename_test(above_limit_name)
-        self.assertFalse(tst.datadir)
-        tst._record_reference       # Should do nothing
+        self.assertFalse(tst.get_data('', 'file', False))
         tst._record_reference('stdout', 'stdout.expected')
         tst._record_reference('stderr', 'stderr.expected')
         tst._record_reference('output', 'output.expected')
 
     def test_all_dirs_exists_no_hang(self):
-        with mock.patch('os.path.exists', return_value=True):
+        with unittest.mock.patch('os.path.exists', return_value=True):
             self.assertRaises(exceptions.TestSetupFail, self.DummyTest, "test",
                               test.TestID(1, "name"), base_logdir=self.tmpdir)
 
     def test_try_override_test_variable(self):
-        test = self.DummyTest(base_logdir=self.tmpdir)
-        self.assertRaises(AttributeError, setattr, test, "name", "whatever")
-        self.assertRaises(AttributeError, setattr, test, "status", "whatever")
+        dummy_test = self.DummyTest(base_logdir=self.tmpdir)
+        self.assertRaises(AttributeError, setattr, dummy_test, "name", "whatever")
+        self.assertRaises(AttributeError, setattr, dummy_test, "status", "whatever")
 
     def test_check_reference_success(self):
         '''

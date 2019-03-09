@@ -84,6 +84,10 @@ class Diff(CLICmd):
                             '(no)config,(no)sysinfo (defaults to all '
                             'enabled).')
 
+        parser.add_argument('--diff-strip-id', action='store_true',
+                            help="Strip the 'id' from 'id-name;variant' when "
+                            "comparing test results.")
+
         parser.add_argument('--paginator',
                             choices=('on', 'off'), default='on',
                             help='Turn the paginator on/off. '
@@ -97,6 +101,12 @@ class Diff(CLICmd):
                         'in the standard output.'
 
     def run(self, args):
+        def _get_name(test):
+            return str(test['id'])
+
+        def _get_name_no_id(test):
+            return str(test['id']).split('-', 1)[1]
+
         job1_dir, job1_id = self._setup_job(args.jobids[0])
         job2_dir, job2_id = self._setup_job(args.jobids[1])
 
@@ -145,13 +155,17 @@ class Diff(CLICmd):
 
         if 'results' in args.diff_filter:
             results1 = []
+            if args.diff_strip_id:
+                get_name = _get_name_no_id
+            else:
+                get_name = _get_name
             for test in job1_data['tests']:
-                test_result = '%s: %s\n' % (str(test['id']),
+                test_result = '%s: %s\n' % (get_name(test),
                                             str(test['status']))
                 results1.append(test_result)
             results2 = []
             for test in job2_data['tests']:
-                test_result = '%s: %s\n' % (str(test['id']),
+                test_result = '%s: %s\n' % (get_name(test),
                                             str(test['status']))
                 results2.append(test_result)
 
@@ -342,7 +356,7 @@ class Diff(CLICmd):
             try:
                 resultsdir = jobdata.get_resultsdir(logdir, job_id)
             except ValueError as exception:
-                LOG_UI.error(exception.message)
+                LOG_UI.error(exception)
                 sys.exit(exit_codes.AVOCADO_FAIL)
 
         if resultsdir is None:

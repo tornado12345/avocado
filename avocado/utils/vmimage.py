@@ -19,22 +19,16 @@ Provides VM images acquired from official repositories
 import os
 import re
 import tempfile
-import urllib2
 import uuid
 
-try:
-    import lzma
-    LZMA_CAPABLE = True
-except ImportError:
-    try:
-        from backports import lzma
-        LZMA_CAPABLE = True
-    except ImportError:
-        LZMA_CAPABLE = False
+from six import itervalues
+from six.moves.urllib.request import urlopen
+from six.moves.urllib.error import HTTPError
+from six.moves.html_parser import HTMLParser
 
-from HTMLParser import HTMLParser
-
+from . import archive
 from . import asset
+from . import astring
 from . import path as utils_path
 from . import process
 
@@ -45,7 +39,7 @@ class ImageProviderError(Exception):
     """
 
 
-class VMImageHtmlParser(HTMLParser):
+class VMImageHtmlParser(HTMLParser):  # pylint: disable=W0223
     """
     Custom HTML parser to extract the href items that match
     a given pattern
@@ -61,7 +55,9 @@ class VMImageHtmlParser(HTMLParser):
             return
         for attr in attrs:
             if attr[0] == 'href' and re.match(self.pattern, attr[1]):
-                self.items.append(attr[1].strip('/'))
+                match = attr[1].strip('/')
+                if match not in self.items:
+                    self.items.append(match)
 
 
 class ImageProviderBase(object):
@@ -69,6 +65,8 @@ class ImageProviderBase(object):
     Base class to define the common methods and attributes of an
     image. Intended to be sub-classed by the specific image providers.
     """
+
+    HTML_ENCODING = 'utf-8'
 
     def __init__(self, version, build, arch):
 
@@ -85,16 +83,28 @@ class ImageProviderBase(object):
     def version(self):
         return self._best_version or self.get_version()
 
+    @property
+    def version_pattern(self):
+        return '^%s/$' % self._version
+
+    def _feed_html_parser(self, url, parser):
+        try:
+            data = urlopen(url).read()
+            parser.feed(astring.to_text(data, self.HTML_ENCODING))
+        except HTTPError:
+            raise ImageProviderError('Cannot open %s' % self.url_versions)
+
+    def get_best_version(self, versions):
+        return max(versions)
+
     def get_version(self):
         """
         Probes the higher version available for the current parameters.
         """
-        pattern = '^%s/$' % self._version
-        parser = VMImageHtmlParser(pattern)
-        try:
-            parser.feed(urllib2.urlopen(self.url_versions).read())
-        except urllib2.HTTPError:
-            raise ImageProviderError('Cannot open %s' % self.url_versions)
+        parser = VMImageHtmlParser(self.version_pattern)
+
+        self._feed_html_parser(self.url_versions, parser)
+
         if parser.items:
             resulting_versions = []
             for version in parser.items:
@@ -110,7 +120,7 @@ class ImageProviderBase(object):
                     except ValueError:
                         # So it's just a string
                         resulting_versions.append(version)
-            self._best_version = max(resulting_versions)
+            self._best_version = self.get_best_version(resulting_versions)
             return self._best_version
         else:
             raise ImageProviderError('Version not available at %s' %
@@ -120,6 +130,10 @@ class ImageProviderBase(object):
         """
         Probes the higher image available for the current parameters.
         """
+        if not self.url_images or not self.image_pattern:
+            raise ImageProviderError(
+                "url_images and image_pattern attributes are required to get image url")
+
         url_images = self.url_images.format(version=self.version,
                                             build=self.build,
                                             arch=self.arch)
@@ -127,11 +141,8 @@ class ImageProviderBase(object):
                                           build=self.build,
                                           arch=self.arch)
         parser = VMImageHtmlParser(image)
-        try:
-            content = urllib2.urlopen(url_images).read()
-            parser.feed(content)
-        except urllib2.HTTPError:
-            raise ImageProviderError('Cannot open %s' % url_images)
+
+        self._feed_html_parser(url_images, parser)
 
         if parser.items:
             return url_images + max(parser.items)
@@ -140,7 +151,23 @@ class ImageProviderBase(object):
                                      "Wrong arch?" % (image, url_images))
 
 
-class FedoraImageProvider(ImageProviderBase):
+class FedoraImageProviderBase(ImageProviderBase):
+    """
+    Base Fedora Image Provider
+    """
+
+    HTML_ENCODING = 'iso-8859-1'
+
+    def get_image_url(self):
+        if int(self.version) >= 28:
+            cloud = 'Cloud'
+        else:
+            cloud = 'CloudImages'
+        self.url_images = self.url_images % cloud
+        return super(FedoraImageProviderBase, self).get_image_url()
+
+
+class FedoraImageProvider(FedoraImageProviderBase):
     """
     Fedora Image Provider
     """
@@ -151,11 +178,11 @@ class FedoraImageProvider(ImageProviderBase):
                  arch=os.uname()[4]):
         super(FedoraImageProvider, self).__init__(version, build, arch)
         self.url_versions = 'https://dl.fedoraproject.org/pub/fedora/linux/releases/'
-        self.url_images = self.url_versions + '{version}/CloudImages/{arch}/images/'
+        self.url_images = self.url_versions + '{version}/%s/{arch}/images/'
         self.image_pattern = 'Fedora-Cloud-Base-{version}-{build}.{arch}.qcow2$'
 
 
-class FedoraSecondaryImageProvider(ImageProviderBase):
+class FedoraSecondaryImageProvider(FedoraImageProviderBase):
     """
     Fedora Secondary Image Provider
     """
@@ -167,7 +194,7 @@ class FedoraSecondaryImageProvider(ImageProviderBase):
         super(FedoraSecondaryImageProvider, self).__init__(version, build,
                                                            arch)
         self.url_versions = 'https://dl.fedoraproject.org/pub/fedora-secondary/releases/'
-        self.url_images = self.url_versions + '{version}/CloudImages/{arch}/images/'
+        self.url_images = self.url_versions + '{version}/%s/{arch}/images/'
         self.image_pattern = 'Fedora-Cloud-Base-{version}-{build}.{arch}.qcow2$'
 
 
@@ -182,7 +209,7 @@ class CentOSImageProvider(ImageProviderBase):
         super(CentOSImageProvider, self).__init__(version, build, arch)
         self.url_versions = 'https://cloud.centos.org/centos/'
         self.url_images = self.url_versions + '{version}/images/'
-        if LZMA_CAPABLE:
+        if archive.LZMA_CAPABLE:
             self.image_pattern = 'CentOS-{version}-{arch}-GenericCloud-{build}.qcow2.xz$'
         else:
             self.image_pattern = 'CentOS-{version}-{arch}-GenericCloud-{build}.qcow2$'
@@ -200,6 +227,9 @@ class UbuntuImageProvider(ImageProviderBase):
         # Ubuntu uses 'amd64' instead of 'x86_64'
         if arch == 'x86_64':
             arch = 'amd64'
+        # and 'arm64' instead of 'aarch64'
+        elif arch == 'aarch64':
+            arch = 'arm64'
 
         super(UbuntuImageProvider, self).__init__(version, build, arch)
         self.url_versions = 'http://cloud-images.ubuntu.com/releases/'
@@ -219,6 +249,9 @@ class DebianImageProvider(ImageProviderBase):
         # Debian uses 'amd64' instead of 'x86_64'
         if arch == 'x86_64':
             arch = 'amd64'
+        # and 'arm64' instead of 'aarch64'
+        elif arch == 'aarch64':
+            arch = 'arm64'
 
         super(DebianImageProvider, self).__init__(version, build, arch)
         self.url_versions = 'https://cdimage.debian.org/cdimage/openstack/'
@@ -245,9 +278,41 @@ class JeosImageProvider(ImageProviderBase):
         self.image_pattern = 'jeos-{version}-{arch}.qcow2.xz$'
 
 
+class OpenSUSEImageProvider(ImageProviderBase):
+    """
+    OpenSUSE Image Provider
+    """
+
+    HTML_ENCODING = 'iso-8859-1'
+    name = 'OpenSUSE'
+
+    def __init__(self, version='[0-9]{2}.[0-9]{1}', build=None, arch=os.uname()[4]):
+        super(OpenSUSEImageProvider, self).__init__(version, build, arch)
+        self.url_versions = 'https://download.opensuse.org/repositories/Cloud:/Images:/'
+        self.url_images = self.url_versions + 'Leap_{version}/images/'
+
+        if not build:
+            self.image_pattern = 'openSUSE-Leap-{version}-OpenStack.{arch}-((.)*).qcow2$'
+        else:
+            self.image_pattern = 'openSUSE-Leap-{version}-OpenStack.{arch}-{build}.qcow2$'
+
+    @property
+    def version_pattern(self):
+        return '^Leap_%s' % self._version
+
+    def get_best_version(self, versions):
+        # versions pattern equals Leap_15.0, Leap_42.0, Leap_XY.Z
+        version_numbers = [float(v.split('_')[1]) for v in versions]
+        if self._version.startswith('4'):
+            version_numbers = [v for v in version_numbers if v >= 40.0]
+        else:
+            version_numbers = [v for v in version_numbers if v < 40.0]
+        return max(version_numbers)
+
+
 class Image(object):
     def __init__(self, name, url, version, arch, checksum, algorithm,
-                 cache_dir):
+                 cache_dir, snapshot_dir=None):
         self.name = name
         self.url = url
         self.version = version
@@ -255,6 +320,7 @@ class Image(object):
         self.checksum = checksum
         self.algorithm = algorithm
         self.cache_dir = cache_dir
+        self.snapshot_dir = snapshot_dir
 
         self._path = None
         self._base_image = None
@@ -283,7 +349,7 @@ class Image(object):
                                  expire=None).fetch()
 
         if os.path.splitext(asset_path)[1] == '.xz':
-            asset_path = self._extract(asset_path)
+            asset_path = archive.extract_lzma(asset_path)
 
         self._base_image = asset_path
         self._path = self._take_snapshot()
@@ -297,28 +363,18 @@ class Image(object):
         name, extension = os.path.splitext(self.base_image)
         new_image = '%s-%s%s' % (name, str(uuid.uuid4()).split('-')[0],
                                  extension)
+        if self.snapshot_dir is not None:
+            new_image = os.path.join(self.snapshot_dir,
+                                     os.path.basename(new_image))
         cmd = '%s create -f qcow2 -b %s %s' % (qemu_img,
                                                self.base_image,
                                                new_image)
         process.run(cmd)
         return new_image
 
-    @staticmethod
-    def _extract(path, force=False):
-        """
-        Extracts a XZ compressed file to the same directory.
-        """
-        extracted_file = os.path.splitext(path)[0]
-        if not force and os.path.exists(extracted_file):
-            return extracted_file
-        with open(path, 'r') as file_obj:
-            with open(extracted_file, 'wb') as newfile_obj:
-                newfile_obj.write(lzma.decompress(file_obj.read()))
-        return extracted_file
-
 
 def get(name=None, version=None, build=None, arch=None, checksum=None,
-        algorithm=None, cache_dir=None):
+        algorithm=None, cache_dir=None, snapshot_dir=None):
     """
     Wrapper to get the best Image Provider, according to the parameters
     provided.
@@ -332,8 +388,10 @@ def get(name=None, version=None, build=None, arch=None, checksum=None,
                      download.
     :param algorithm: (optional) Hash type, used when the checksum is
                       provided.
-    :param cache_dir: (optional) Local system path where the images and
-                      the snapshots will be held.
+    :param cache_dir: (optional) Local system path where the base
+                      images will be held.
+    :param snapshot_dir: (optional) Local system path where the snapshot images
+                         will be held.  Defaults to cache_dir if none is given.
 
     :returns: Image Provider instance that can provide the image
               according to the parameters.
@@ -352,6 +410,8 @@ def get(name=None, version=None, build=None, arch=None, checksum=None,
         provider_args['build'] = version
     if arch is not None:
         provider_args['arch'] = arch
+        if name == 'fedora' and arch in ('ppc64', 'ppc64le'):
+            name = 'fedorasecondary'
 
     for provider in IMAGE_PROVIDERS:
         if name is None or name == provider.name.lower():
@@ -363,7 +423,8 @@ def get(name=None, version=None, build=None, arch=None, checksum=None,
                              arch=cls.arch,
                              checksum=checksum,
                              algorithm=algorithm,
-                             cache_dir=cache_dir)
+                             cache_dir=cache_dir,
+                             snapshot_dir=snapshot_dir)
             except ImageProviderError:
                 pass
 
@@ -374,10 +435,10 @@ def list_providers():
     """
     List the available Image Providers
     """
-    return set(_ for _ in globals().itervalues()
-               if (_ != ImageProviderBase and
-                   isinstance(_, type) and
-                   issubclass(_, ImageProviderBase)))
+    return set(_ for _ in itervalues(globals())
+               if (isinstance(_, type) and
+                   issubclass(_, ImageProviderBase) and
+                   hasattr(_, 'name')))
 
 
 #: List of available providers classes

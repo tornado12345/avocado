@@ -34,7 +34,6 @@ class VirtError(Exception):
     Generic exception class to propagate underling
     errors to the caller.
     """
-    pass
 
 
 class Hypervisor(object):
@@ -100,7 +99,6 @@ class Hypervisor(object):
         avoid unwanted messages from libvirt exceptions to be sent for
         stdout.
         """
-        pass
 
 
 class VM(object):
@@ -385,7 +383,7 @@ class VMTestRunner(RemoteTestRunner):
             self.vm = vm_connect(self.job.args.vm_domain,
                                  self.job.args.vm_hypervisor_uri)
         except VirtError as exception:
-            raise exceptions.JobError(exception.message)
+            raise exceptions.JobError(exception)
         if self.vm.start() is False:
             e_msg = "Could not start VM '%s'" % self.job.args.vm_domain
             raise exceptions.JobError(e_msg)

@@ -27,9 +27,6 @@ import tempfile
 import time
 import traceback
 
-from six import iteritems
-from six.moves import xrange as range
-
 from . import version
 from . import data_dir
 from . import dispatcher
@@ -68,17 +65,28 @@ class Job(object):
     along with setup operations and event recording.
     """
 
+    LOG_MAP = {'info': logging.INFO,
+               'debug': logging.DEBUG,
+               'warning': logging.WARNING,
+               'error': logging.ERROR,
+               'critical': logging.CRITICAL}
+
     def __init__(self, args=None):
         """
         Creates an instance of Job class.
 
-        :param args: an instance of :class:`argparse.Namespace`.
+        :param args: the job configuration, usually set by command
+                     line options and argument parsing
+        :type args: :class:`argparse.Namespace`
         """
-        if args is None:
-            args = argparse.Namespace()
-        self.args = args
+        self.args = args or argparse.Namespace()
         self.references = getattr(args, "reference", [])
         self.log = LOG_UI
+        self.loglevel = self.LOG_MAP.get(settings.get_value('job.output',
+                                                            'loglevel',
+                                                            default='debug'),
+                                         logging.DEBUG)
+        self.__logging_handlers = {}
         self.standalone = getattr(self.args, 'standalone', False)
         if getattr(self.args, "dry_run", False):  # Modify args for dry-run
             unique_id = getattr(self.args, 'unique_job_id', None)
@@ -96,19 +104,7 @@ class Job(object):
         self.logdir = None
         self.logfile = None
         self.tmpdir = None
-        self.__remove_tmpdir = False
-        raw_log_level = settings.get_value('job.output', 'loglevel',
-                                           default='debug')
-        mapping = {'info': logging.INFO,
-                   'debug': logging.DEBUG,
-                   'warning': logging.WARNING,
-                   'error': logging.ERROR,
-                   'critical': logging.CRITICAL}
-        if raw_log_level in mapping:
-            self.loglevel = mapping[raw_log_level]
-        else:
-            self.loglevel = logging.DEBUG
-
+        self.__keep_tmpdir = True
         self.status = "RUNNING"
         self.result = None
         self.sysinfo = None
@@ -122,7 +118,6 @@ class Job(object):
         #: The total amount of time the job took from start to finish,
         #: or `-1` if it has not been started by means of the `run()` method
         self.time_elapsed = -1
-        self.__logging_handlers = {}
         self.funcatexit = data_structures.CallbackRegister("JobExit %s"
                                                            % self.unique_id,
                                                            LOG_JOB)
@@ -135,6 +130,16 @@ class Job(object):
         #: test was found during resolution.
         self.test_suite = None
         self.test_runner = None
+
+        #: Placeholder for test parameters (related to --test-parameters command
+        #: line option).  They're kept in the job because they will be prepared
+        #: only once, since they are read only and will be shared across all
+        #: tests of a job.
+        self.test_parameters = None
+        if "test_parameters" in self.args:
+            self.test_parameters = {}
+            for parameter_name, parameter_value in self.args.test_parameters:
+                self.test_parameters[parameter_name] = parameter_value
 
         # The result events dispatcher is shared with the test runner.
         # Because of our goal to support using the phases of a job
@@ -162,12 +167,12 @@ class Job(object):
         self._setup_job_results()
         self.result = result.Result(self)
         self.__start_job_logging()
-        # Use "logdir" in case "keep_tmp" is set enabled
+        # Use "logdir" in case "keep_tmp" is enabled
         if getattr(self.args, "keep_tmp", None) == "on":
             base_tmpdir = self.logdir
         else:
             base_tmpdir = data_dir.get_tmp_dir()
-            self.__remove_tmpdir = True
+            self.__keep_tmpdir = False
         self.tmpdir = tempfile.mkdtemp(prefix="avocado_job_",
                                        dir=base_tmpdir)
 
@@ -223,7 +228,8 @@ class Job(object):
                          else logging.getLevelName(name[1].upper()))
                 name = name[0]
             try:
-                logfile = os.path.join(self.logdir, name + "." +
+                logname = "log" if name == "" else name
+                logfile = os.path.join(self.logdir, logname + "." +
                                        logging.getLevelName(level))
                 handler = output.add_log_handler(name, logging.FileHandler,
                                                  logfile, level, formatter)
@@ -251,7 +257,7 @@ class Job(object):
     def __stop_job_logging(self):
         if self._stdout_stderr:
             sys.stdout, sys.stderr = self._stdout_stderr
-        for handler, loggers in iteritems(self.__logging_handlers):
+        for handler, loggers in self.__logging_handlers.items():
             for logger in loggers:
                 logging.getLogger(logger).removeHandler(handler)
 
@@ -293,15 +299,6 @@ class Job(object):
                 sysinfo_dir = path.init_dir(self.logdir, 'sysinfo')
                 self.sysinfo = sysinfo.SysInfo(basedir=sysinfo_dir)
 
-    def _make_test_runner(self):
-        if hasattr(self.args, 'test_runner'):
-            test_runner_class = self.args.test_runner
-        else:
-            test_runner_class = runner.TestRunner
-
-        self.test_runner = test_runner_class(job=self,
-                                             result=self.result)
-
     def _make_test_suite(self, references=None):
         """
         Prepares a test suite to be used for running tests
@@ -319,7 +316,8 @@ class Job(object):
                 suite = loader.filter_test_tags(
                     suite,
                     self.args.filter_by_tags,
-                    self.args.filter_by_tags_include_empty)
+                    self.args.filter_by_tags_include_empty,
+                    self.args.filter_by_tags_include_empty_key)
         except loader.LoaderUnhandledReferenceError as details:
             raise exceptions.OptionValidationError(details)
         except KeyboardInterrupt:
@@ -383,10 +381,6 @@ class Job(object):
         LOG_JOB.info('Config files read (in order):')
         for cfg_path in settings.config_paths:
             LOG_JOB.info(cfg_path)
-        if settings.config_paths_failed:
-            LOG_JOB.info('Config files failed to read (in order):')
-            for cfg_path in settings.config_paths_failed:
-                LOG_JOB.info(cfg_path)
         LOG_JOB.info('')
 
         LOG_JOB.info('Avocado config:')
@@ -404,10 +398,10 @@ class Job(object):
     def _log_avocado_datadir(self):
         LOG_JOB.info('Avocado Data Directories:')
         LOG_JOB.info('')
-        LOG_JOB.info('base     ' + data_dir.get_base_dir())
-        LOG_JOB.info('tests    ' + data_dir.get_test_dir())
-        LOG_JOB.info('data     ' + data_dir.get_data_dir())
-        LOG_JOB.info('logs     ' + self.logdir)
+        LOG_JOB.info('base     %s', data_dir.get_base_dir())
+        LOG_JOB.info('tests    %s', data_dir.get_test_dir())
+        LOG_JOB.info('data     %s', data_dir.get_data_dir())
+        LOG_JOB.info('logs     %s', self.logdir)
         LOG_JOB.info('')
 
     @staticmethod
@@ -479,7 +473,8 @@ class Job(object):
                 raise exceptions.OptionValidationError("Unable to parse "
                                                        "variant: %s" % details)
 
-        self._make_test_runner()
+        runner_klass = getattr(self.args, 'test_runner', runner.TestRunner)
+        self.test_runner = runner_klass(job=self, result=self.result)
         self._start_sysinfo()
 
         self._log_job_debug_info(variant)
@@ -542,7 +537,7 @@ class Job(object):
             self.exitcode |= exit_codes.AVOCADO_JOB_FAIL
             return self.exitcode
         except exceptions.OptionValidationError as details:
-            self.log.error('\n' + str(details))
+            self.log.error('\n%s', str(details))
             self.exitcode |= exit_codes.AVOCADO_JOB_FAIL
             return self.exitcode
 
@@ -571,8 +566,24 @@ class Job(object):
         Cleanup the temporary job handlers (dirs, global setting, ...)
         """
         self.__stop_job_logging()
-        if self.__remove_tmpdir and os.path.exists(self.tmpdir):
+        if not self.__keep_tmpdir and os.path.exists(self.tmpdir):
             shutil.rmtree(self.tmpdir)
+        cleanup_conditionals = (
+            getattr(self.args, "dry_run", False),
+            not getattr(self.args, "dry_run_no_cleanup", False)
+        )
+        if all(cleanup_conditionals):
+            # Also clean up temp base directory created because of the dry-run
+            base_logdir = getattr(self.args, "base_logdir", None)
+            if base_logdir is not None:
+                try:
+                    FileNotFoundError
+                except NameError:
+                    FileNotFoundError = OSError   # pylint: disable=W0622
+                try:
+                    shutil.rmtree(base_logdir)
+                except FileNotFoundError:
+                    pass
 
 
 class TestProgram(object):

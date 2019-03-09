@@ -43,7 +43,10 @@ class TestLister(object):
         loader.loader.get_extra_listing()
 
     def _get_test_suite(self, paths):
-        which_tests = loader.ALL if self.args.verbose else loader.AVAILABLE
+        if self.args.verbose:
+            which_tests = loader.DiscoverMode.ALL
+        else:
+            which_tests = loader.DiscoverMode.AVAILABLE
         try:
             return loader.loader.discover(paths,
                                           which_tests=which_tests)
@@ -119,7 +122,8 @@ class TestLister(object):
             test_suite = loader.filter_test_tags(
                 test_suite,
                 self.args.filter_by_tags,
-                self.args.filter_by_tags_include_empty)
+                self.args.filter_by_tags_include_empty,
+                self.args.filter_by_tags_include_empty_key)
         test_matrix, stats, tag_stats = self._get_test_matrix(test_suite)
         self._display(test_matrix, stats, tag_stats)
 
@@ -178,6 +182,13 @@ class List(CLICmd):
                                      'filtering. This effectively means they '
                                      'will be kept in the test suite found '
                                      'previously to filtering.'))
+        filtering.add_argument('--filter-by-tags-include-empty-key',
+                               action='store_true', default=False,
+                               help=('Include all tests that do not have a '
+                                     'matching key in its key:val tags. This '
+                                     'effectively means those tests will be '
+                                     'kept in the test suite found previously '
+                                     'to filtering.'))
 
     def run(self, args):
         test_lister = TestLister(args)

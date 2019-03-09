@@ -5,11 +5,11 @@ import shutil
 import sys
 import random
 
-from six.moves import xrange as range
-
 from avocado.utils import archive
 from avocado.utils import crypto
 from avocado.utils import data_factory
+
+from .. import BASEDIR
 
 
 class ArchiveTest(unittest.TestCase):
@@ -56,7 +56,8 @@ class ArchiveTest(unittest.TestCase):
         dstfile = filename + extension
         archive_filename = os.path.join(self.basedir, dstfile)
         archive.compress(archive_filename, filename)
-        archive.uncompress(archive_filename, self.decompressdir)
+        ret = archive.uncompress(archive_filename, self.decompressdir)
+        self.assertEqual(ret, os.path.basename(filename))
         decompress_file = os.path.join(self.decompressdir,
                                        os.path.basename(filename))
         decompress_hash = crypto.hash_file(decompress_file)
@@ -145,6 +146,38 @@ class ArchiveTest(unittest.TestCase):
                          0o775)
         self.assertEqual(os.stat(get_path("link_to_file")).st_mode & 0o777,
                          0o753)
+
+    def test_empty_tbz2(self):
+        ret = archive.uncompress(os.path.join(BASEDIR, 'selftests', '.data',
+                                 'empty.tar.bz2'), self.decompressdir)
+        self.assertEqual(ret, None, "Empty archive should return None (%s)"
+                         % ret)
+
+    def test_is_gzip_file(self):
+        gz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.gz')
+        self.assertTrue(archive.is_gzip_file(gz_path))
+
+    def test_gzip_uncompress_to_dir(self):
+        gz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.gz')
+        ret = archive.gzip_uncompress(gz_path, self.decompressdir)
+        self.assertEqual(ret, os.path.join(self.decompressdir, 'avocado'))
+
+    def test_gzip_uncompress_to_file(self):
+        gz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.gz')
+        filename = os.path.join(self.decompressdir, 'other')
+        ret = archive.gzip_uncompress(gz_path, filename)
+        self.assertEqual(ret, filename)
+
+    def test_gzip_is_archive(self):
+        gz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.gz')
+        self.assertTrue(archive.is_archive(gz_path))
+
+    def test_uncompress_gzip(self):
+        gz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.gz')
+        ret = archive.uncompress(gz_path, self.decompressdir)
+        self.assertEqual(ret, os.path.join(self.decompressdir, 'avocado'))
+        with open(ret, 'rb') as decompressed:
+            self.assertEqual(decompressed.read(), b'avocado\n')
 
     def tearDown(self):
         try:

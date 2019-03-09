@@ -8,8 +8,6 @@ import tempfile
 import time
 import unittest
 
-from six.moves import xrange as range
-
 from avocado.utils.filelock import FileLock
 from avocado.utils.stacktrace import prepare_exc_info
 from avocado.utils import process
@@ -20,7 +18,7 @@ DEFAULT_MODE = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
                 stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP |
                 stat.S_IROTH | stat.S_IXOTH)
 
-FAKE_VMSTAT_CONTENTS = """#!/usr/bin/env python
+FAKE_VMSTAT_CONTENTS = """#!{python}
 import time
 import random
 import signal
@@ -115,13 +113,13 @@ class FakeVMStat(object):
 if __name__ == '__main__':
     vmstat = FakeVMStat(interval=float(sys.argv[1]))
     vmstat.start()
-"""
+""".format(python=sys.executable)
 
-FAKE_UPTIME_CONTENTS = """#!/usr/bin/env python
+FAKE_UPTIME_CONTENTS = """#!{python}
 if __name__ == '__main__':
     print("17:56:34 up  8:06,  7 users,  load average: 0.26, 0.20, 0.21")
 
-"""
+""".format(python=sys.executable)
 
 
 class ProcessTest(unittest.TestCase):
@@ -143,7 +141,7 @@ class ProcessTest(unittest.TestCase):
         proc.start()
         time.sleep(3)
         proc.terminate()
-        proc.wait()
+        proc.wait(timeout=1)
         stdout = proc.get_stdout().decode()
         self.assertIn('memory', stdout, 'result: %s' % stdout)
         self.assertRegexpMatches(stdout, '[0-9]+')
@@ -186,7 +184,7 @@ class FileLockTest(unittest.TestCase):
         args = [(self.tmpdir, players, timeout)] * players
         try:
             pool.map(file_lock_action, args)
-        except:
+        except Exception:
             msg = 'Failed to run FileLock with %s players:\n%s'
             msg %= (players, prepare_exc_info(sys.exc_info()))
             self.fail(msg)

@@ -72,13 +72,12 @@ def __private():
             spark.GenericScanner.tokenize(self, input_message)
             return self.rv
 
-        def t_nl(self, s):
+        def t_nl(self, s):  # pylint: disable=W0613
             r'\n|\r\n'
             self.rv.append(Token('nl'))
 
         def t_whitespace(self, s):
             r'[ \t\f\v]+'
-            pass
 
         def t_symbol(self, s):
             r',|\{|\}|\[|\]|\='
@@ -158,7 +157,6 @@ def __private():
             list ::= { value }
             list ::= { value value_list }
             """
-            pass
 
         def terminal(self, token):
             #  Homogeneous AST.

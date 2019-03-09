@@ -21,8 +21,14 @@ from stevedore import EnabledExtensionManager
 
 from .settings import settings
 from .settings import SettingsError
+from .settings import SettingsDispatcher
 from .output import LOG_UI
 from ..utils import stacktrace
+
+
+#: Settings dispatcher is simplified and has to be available before the
+#: settings object. Let's include it here for consistency
+SettingsDispatcher = SettingsDispatcher
 
 
 class Dispatcher(EnabledExtensionManager):
@@ -144,7 +150,8 @@ class Dispatcher(EnabledExtensionManager):
             except KeyboardInterrupt:
                 raise
             except:     # catch any exception pylint: disable=W0702
-                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.debug')
+                stacktrace.log_exc_info(sys.exc_info(),
+                                        logger='avocado.app.debug')
                 LOG_UI.error('Error running method "%s" of plugin "%s": %s',
                              method_name, ext.name, sys.exc_info()[1])
         return ret
@@ -166,7 +173,8 @@ class Dispatcher(EnabledExtensionManager):
             except KeyboardInterrupt:
                 raise
             except:     # catch any exception pylint: disable=W0702
-                stacktrace.log_exc_info(sys.exc_info(), logger='avocado.debug')
+                stacktrace.log_exc_info(sys.exc_info(),
+                                        logger='avocado.app.debug')
                 LOG_UI.error('Error running method "%s" of plugin "%s": %s',
                              method_name, ext.name, sys.exc_info()[1])
 

@@ -37,13 +37,13 @@ class Config(CLICmd):
                             'Current: %(default)s')
 
     def run(self, args):
-        LOG_UI.info('Config files read (in order):')
-        for cfg_path in settings.config_paths:
-            LOG_UI.debug('    %s' % cfg_path)
-        if settings.config_paths_failed:
-            LOG_UI.error('\nConfig files that failed to read:')
-            for cfg_path in settings.config_paths_failed:
-                LOG_UI.error('    %s' % cfg_path)
+        LOG_UI.info("Config files read (in order, '*' means the file exists "
+                    "and had been read):")
+        for cfg_path in settings.all_config_paths:
+            if cfg_path in settings.config_paths:
+                LOG_UI.debug('    * %s', cfg_path)
+            else:
+                LOG_UI.debug('      %s', cfg_path)
         LOG_UI.debug("")
         if not args.datadir:
             blength = 0
@@ -66,7 +66,8 @@ class Config(CLICmd):
             LOG_UI.debug("file to customize values")
             LOG_UI.debug('')
             LOG_UI.info('Avocado Data Directories:')
-            LOG_UI.debug('    base     ' + data_dir.get_base_dir())
-            LOG_UI.debug('    tests    ' + data_dir.get_test_dir())
-            LOG_UI.debug('    data     ' + data_dir.get_data_dir())
-            LOG_UI.debug('    logs     ' + data_dir.get_logs_dir())
+            LOG_UI.debug('    base     %s', data_dir.get_base_dir())
+            LOG_UI.debug('    tests    %s', data_dir.get_test_dir())
+            LOG_UI.debug('    data     %s', data_dir.get_data_dir())
+            LOG_UI.debug('    logs     %s', data_dir.get_logs_dir())
+            LOG_UI.debug('    cache    %s', ", ".join(data_dir.get_cache_dirs()))

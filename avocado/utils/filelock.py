@@ -56,14 +56,14 @@ class FileLock(object):
                 os.close(fd)
                 self.locked = True
                 return self
-            except:
+            except Exception:
                 try:
                     # Read the file to realize what's happening.
                     with open(self.filename, 'r') as f:
                         try:
                             content = f.read()
-                        except Exception as e:
-                            raise LockFailed(e.message)
+                        except Exception as detail:
+                            raise LockFailed(detail)
 
                     # If file is empty, I guess someone created it with 'touch'
                     # to manually lock the file.
@@ -90,7 +90,7 @@ class FileLock(object):
                             except:
                                 raise LockFailed('Not able to lock.')
 
-                except:
+                except Exception:
                     # If we cannot read the lock file, let's just
                     # go on. Maybe in next iteration (if we have time)
                     # we have a better luck.
@@ -111,5 +111,5 @@ class FileLock(object):
             try:
                 os.remove(self.filename)
                 self.locked = False
-            except:
+            except Exception:
                 pass

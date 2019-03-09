@@ -15,6 +15,9 @@ optional plugins:
    robot
    varianter_yaml_to_mux
    varianter_pict
+   varianter_cit
    yaml_loader
    golang
    glib
+   avocado_ec2
+   azure

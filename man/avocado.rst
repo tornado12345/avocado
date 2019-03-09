@@ -126,11 +126,18 @@ Options for subcommand `run` (`avocado run --help`)::
       --tap-job-result {on,off}
                             Enables default TAP result in the job results
                             directory. File will be named "results.tap".
+      --tap-include-logs    Include test logs as comments in TAP output. Defaults
+                            to False
       --xunit FILE          Enable xUnit result format and write it to FILE. Use
                             '-' to redirect to the standard output.
       --xunit-job-result {on,off}
                             Enables default xUnit result in the job results
                             directory. File will be named "results.xml".
+      --xunit-job-name XUNIT_JOB_NAME
+                            Override the reported job name. By default uses the
+                            Avocado job name which is always unique. This is
+                            useful for reporting in Jenkins as it only evaluates
+                            first-failure from jobs of the same name.
       --xunit-max-test-log-chars SIZE
                             Limit the attached job log to given number of
                             characters (k/m/g suffix allowed)
@@ -545,25 +552,25 @@ doubt about which one is that, you may use `avocado config --datadir`).
 The output looks like::
 
     $ avocado list
-    INSTRUMENTED /usr/share/avocado/tests/abort.py
-    INSTRUMENTED /usr/share/avocado/tests/datadir.py
-    INSTRUMENTED /usr/share/avocado/tests/doublefail.py
-    INSTRUMENTED /usr/share/avocado/tests/doublefree.py
-    INSTRUMENTED /usr/share/avocado/tests/errortest.py
-    INSTRUMENTED /usr/share/avocado/tests/failtest.py
-    INSTRUMENTED /usr/share/avocado/tests/fiotest.py
-    INSTRUMENTED /usr/share/avocado/tests/gdbtest.py
-    INSTRUMENTED /usr/share/avocado/tests/gendata.py
-    INSTRUMENTED /usr/share/avocado/tests/linuxbuild.py
-    INSTRUMENTED /usr/share/avocado/tests/multiplextest.py
-    INSTRUMENTED /usr/share/avocado/tests/passtest.py
-    INSTRUMENTED /usr/share/avocado/tests/skiptest.py
-    INSTRUMENTED /usr/share/avocado/tests/sleeptenmin.py
-    INSTRUMENTED /usr/share/avocado/tests/sleeptest.py
-    INSTRUMENTED /usr/share/avocado/tests/synctest.py
-    INSTRUMENTED /usr/share/avocado/tests/timeouttest.py
-    INSTRUMENTED /usr/share/avocado/tests/warntest.py
-    INSTRUMENTED /usr/share/avocado/tests/whiteboard.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/abort.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/datadir.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/doublefail.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/doublefree.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/errortest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/failtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/fiotest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/gdbtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/gendata.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/linuxbuild.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/multiplextest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/passtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/skiptest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/sleeptenmin.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/sleeptest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/synctest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/timeouttest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/warntest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/whiteboard.py
 
 Here, `INSTRUMENTED` means that the files there are python files with an
 avocado test class in them, therefore, that they are what we call

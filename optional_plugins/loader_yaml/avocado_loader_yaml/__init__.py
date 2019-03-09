@@ -85,7 +85,7 @@ class YamlTestsuiteLoader(loader.TestLoader):
         if not _args:
             args = self.args
         else:
-            args = copy.deepcopy(self.args)
+            args = copy.copy(self.args)
             for key, value in iteritems(_args):
                 setattr(args, key, value)
         extra_params = params.get("test_reference_resolver_extra", default={})
@@ -93,7 +93,7 @@ class YamlTestsuiteLoader(loader.TestLoader):
             extra_params = copy.deepcopy(extra_params)
         return loader_class(args, extra_params)
 
-    def discover(self, reference, which_tests=loader.DEFAULT):
+    def discover(self, reference, which_tests=loader.DiscoverMode.DEFAULT):
         tests = []
         try:
             root = mux.apply_filters(create_from_yaml([reference], False),
@@ -140,11 +140,11 @@ class LoaderYAML(CLI):
             if subparser is None:
                 continue
 
-        mux = subparser.add_argument_group("yaml to mux testsuite options")
-        mux.add_argument("--mux-suite-only", nargs="+",
-                         help="Filter only part of the YAML suite file")
-        mux.add_argument("--mux-suite-out", nargs="+",
-                         help="Filter out part of the YAML suite file")
+        mux_options = subparser.add_argument_group("yaml to mux testsuite options")
+        mux_options.add_argument("--mux-suite-only", nargs="+",
+                                 help="Filter only part of the YAML suite file")
+        mux_options.add_argument("--mux-suite-out", nargs="+",
+                                 help="Filter out part of the YAML suite file")
 
     def run(self, args):
         loader.loader.register_plugin(YamlTestsuiteLoader)

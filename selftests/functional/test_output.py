@@ -6,8 +6,6 @@ import tempfile
 import unittest
 from xml.dom import minidom
 
-import pkg_resources
-
 from avocado.core import exit_codes
 from avocado.core.output import TermSupport
 from avocado.utils import genio
@@ -15,16 +13,16 @@ from avocado.utils import process
 from avocado.utils import script
 from avocado.utils import path as utils_path
 
-basedir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-basedir = os.path.abspath(basedir)
-
-AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
+from .. import AVOCADO, BASEDIR
 
 
+# AVOCADO may contain more than a single command, as it can be
+# prefixed by the Python interpreter
+AVOCADO_QUOTED = ", ".join(["'%s'" % cmd for cmd in AVOCADO.split(' ')])
 PERL_TAP_PARSER_SNIPPET = """#!/bin/env perl
 use TAP::Parser;
 
-my $parser = TAP::Parser->new( { exec => ['%s', 'run', 'passtest.py', 'errortest.py', 'warntest.py', '--tap', '-', '--sysinfo', 'off', '--job-results-dir', '%%s'] } );
+my $parser = TAP::Parser->new( { exec => [%s, 'run', 'passtest.py', 'errortest.py', 'warntest.py', '--tap', '-', '--sysinfo', 'off', '--job-results-dir', '%%s'] } );
 
 while ( my $result = $parser->next ) {
         $result->is_unknown && die "Unknown line \\"" . $result->as_string . "\\" in the TAP output!\n";
@@ -32,7 +30,7 @@ while ( my $result = $parser->next ) {
 $parser->parse_errors == 0 || die "Parser errors!\n";
 $parser->is_good_plan || die "Plan is not a good plan!\n";
 $parser->plan eq '1..3' || die "Plan does not match what was expected!\n";
-""" % AVOCADO
+""" % AVOCADO_QUOTED
 
 
 OUTPUT_TEST_CONTENT = """#!/bin/env python
@@ -114,17 +112,9 @@ class OutputCheckOnOff(Test):
 
 def image_output_uncapable():
     try:
-        import PIL              # pylint: disable=W0612
+        import PIL              # pylint: disable=W0611,W0612
         return False
     except ImportError:
-        return True
-
-
-def html_uncapable():
-    try:
-        pkg_resources.require('avocado-framework-plugin-result-html')
-        return False
-    except pkg_resources.DistributionNotFound:
         return True
 
 
@@ -144,7 +134,7 @@ class OutputTest(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        os.chdir(basedir)
+        os.chdir(BASEDIR)
 
     @unittest.skipIf(missing_binary('cc'),
                      "C compiler is required by the underlying doublefree.py test")
@@ -233,11 +223,11 @@ class OutputTest(unittest.TestCase):
         with script.Script(os.path.join(self.tmpdir, "output_mode_none.py"),
                            OUTPUT_MODE_NONE_CONTENT,
                            script.READ_ONLY_MODE) as test:
-            cmd = ("%s run --job-results-dir %s --sysinfo=off "
-                   "--json - --output-check-record none -- %s") % (AVOCADO,
-                                                                   self.tmpdir,
-                                                                   test.path)
-            result = process.run(cmd)
+            command = ("%s run --job-results-dir %s --sysinfo=off "
+                       "--json - --output-check-record none -- %s") % (AVOCADO,
+                                                                       self.tmpdir,
+                                                                       test.path)
+            result = process.run(command)
             res = json.loads(result.stdout_text)
             testdir = res["tests"][0]["logdir"]
             for output_file in ('stdout', 'stderr', 'output'):
@@ -257,9 +247,9 @@ class OutputTest(unittest.TestCase):
         with script.Script(os.path.join(self.tmpdir, "test_check_on_off.py"),
                            OUTPUT_CHECK_ON_OFF_CONTENT,
                            script.READ_ONLY_MODE) as test:
-            cmd = ("%s run --job-results-dir %s --sysinfo=off "
-                   "--json - -- %s") % (AVOCADO, self.tmpdir, test.path)
-            result = process.run(cmd)
+            command = ("%s run --job-results-dir %s --sysinfo=off "
+                       "--json - -- %s") % (AVOCADO, self.tmpdir, test.path)
+            result = process.run(command)
             res = json.loads(result.stdout_text)
             testdir = res["tests"][0]["logdir"]
             stdout_path = os.path.join(testdir, 'stdout')
@@ -281,7 +271,7 @@ class OutputPluginTest(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        os.chdir(basedir)
+        os.chdir(BASEDIR)
 
     def check_output_files(self, debug_log):
         base_dir = os.path.dirname(debug_log)
@@ -319,134 +309,64 @@ class OutputPluginTest(unittest.TestCase):
                              "Missing error message from output:\n%s" %
                              result.stderr)
 
-    @unittest.skipIf(html_uncapable(),
-                     "Uncapable of Avocado Result HTML plugin")
-    def test_output_incompatible_setup_2(self):
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    '--html - passtest.py' % (AVOCADO, self.tmpdir))
-        result = process.run(cmd_line, ignore_status=True)
-        expected_rc = exit_codes.AVOCADO_JOB_FAIL
-        output = result.stdout + result.stderr
-        self.assertEqual(result.exit_status, expected_rc,
-                         "Avocado did not return rc %d:\n%s" %
-                         (expected_rc, result))
-        error_excerpt = b"HTML to stdout not supported"
-        self.assertIn(error_excerpt, output,
-                      "Missing excerpt error message from output:\n%s" % output)
-
     def test_output_compatible_setup(self):
-        tmpfile = tempfile.mktemp()
+        tmpfile = tempfile.mktemp(dir=self.tmpdir)
         cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
                     '--journal --xunit %s --json - passtest.py' %
                     (AVOCADO, self.tmpdir, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout_text + result.stderr_text
         expected_rc = exit_codes.AVOCADO_ALL_OK
-        try:
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            # Check if we are producing valid outputs
-            json.loads(output)
-            minidom.parse(tmpfile)
-        finally:
-            try:
-                os.remove(tmpfile)
-            except OSError:
-                pass
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        # Check if we are producing valid outputs
+        json.loads(output)
+        minidom.parse(tmpfile)
 
     def test_output_compatible_setup_2(self):
-        tmpfile = tempfile.mktemp()
+        tmpfile = tempfile.mktemp(dir=self.tmpdir)
         cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    '--xunit - --json %s passtest.py' %
-                    (AVOCADO, self.tmpdir, tmpfile))
+                    '--xunit - --json %s --tap-include-logs passtest.py'
+                    % (AVOCADO, self.tmpdir, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
-        try:
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            # Check if we are producing valid outputs
-            with open(tmpfile, 'r') as fp:
-                json_results = json.load(fp)
-                debug_log = json_results['debuglog']
-                self.check_output_files(debug_log)
-            minidom.parseString(output)
-        finally:
-            try:
-                os.remove(tmpfile)
-            except OSError:
-                pass
-
-    @unittest.skipIf(html_uncapable(),
-                     "Uncapable of Avocado Result HTML plugin")
-    def test_output_compatible_setup_3(self):
-        tmpfile = tempfile.mktemp(prefix='avocado_' + __name__)
-        tmpfile2 = tempfile.mktemp(prefix='avocado_' + __name__)
-        tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        tmpfile3 = os.path.join(tmpdir, "result.html")
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    '--xunit %s --json %s --html %s passtest.py'
-                    % (AVOCADO, self.tmpdir, tmpfile, tmpfile2, tmpfile3))
-        result = process.run(cmd_line, ignore_status=True)
-        output = result.stdout + result.stderr
-        expected_rc = exit_codes.AVOCADO_ALL_OK
-        tmpdir_contents = os.listdir(tmpdir)
-        self.assertEqual(len(tmpdir_contents), 1, "Html plugin generated "
-                         "extra files in the result dir: %s"
-                         % tmpdir_contents)
-        try:
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            self.assertNotEqual(output, "", "Output is empty")
-            # Check if we are producing valid outputs
-            with open(tmpfile2, 'r') as fp:
-                json_results = json.load(fp)
-                debug_log = json_results['debuglog']
-                self.check_output_files(debug_log)
-            minidom.parse(tmpfile)
-        finally:
-            try:
-                os.remove(tmpfile)
-                os.remove(tmpfile2)
-                shutil.rmtree(tmpdir)
-            except OSError:
-                pass
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        # Check if we are producing valid outputs
+        with open(tmpfile, 'r') as fp:
+            json_results = json.load(fp)
+            debug_log = json_results['debuglog']
+            self.check_output_files(debug_log)
+        minidom.parseString(output)
 
     def test_output_compatible_setup_nooutput(self):
-        tmpfile = tempfile.mktemp()
-        tmpfile2 = tempfile.mktemp()
+        tmpfile = tempfile.mktemp(dir=self.tmpdir)
+        tmpfile2 = tempfile.mktemp(dir=self.tmpdir)
         # Verify --silent can be supplied as app argument
         cmd_line = ('%s --silent run --job-results-dir %s '
-                    '--sysinfo=off --xunit %s --json %s passtest.py'
-                    % (AVOCADO, self.tmpdir, tmpfile, tmpfile2))
+                    '--sysinfo=off --xunit %s --json %s --tap-include-logs '
+                    'passtest.py' % (AVOCADO, self.tmpdir, tmpfile, tmpfile2))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
-        try:
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            self.assertEqual(output, b"", "Output is not empty:\n%s" % output)
-            # Check if we are producing valid outputs
-            with open(tmpfile2, 'r') as fp:
-                json_results = json.load(fp)
-                debug_log = json_results['debuglog']
-                self.check_output_files(debug_log)
-            minidom.parse(tmpfile)
-        finally:
-            try:
-                os.remove(tmpfile)
-                os.remove(tmpfile2)
-            except OSError:
-                pass
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        self.assertEqual(output, b"", "Output is not empty:\n%s" % output)
+        # Check if we are producing valid outputs
+        with open(tmpfile2, 'r') as fp:
+            json_results = json.load(fp)
+            debug_log = json_results['debuglog']
+            self.check_output_files(debug_log)
+        minidom.parse(tmpfile)
 
     def test_nonprintable_chars(self):
         cmd_line = ("%s run --external-runner /bin/ls "
                     "'NON_EXISTING_FILE_WITH_NONPRINTABLE_CHARS_IN_HERE\x1b' "
-                    "--job-results-dir %s --sysinfo=off"
+                    "--job-results-dir %s --sysinfo=off --tap-include-logs"
                     % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout_text + result.stderr_text
@@ -493,7 +413,8 @@ class OutputPluginTest(unittest.TestCase):
 
     def test_default_enabled_plugins(self):
         cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    'passtest.py' % (AVOCADO, self.tmpdir))
+                    '--tap-include-logs passtest.py'
+                    % (AVOCADO, self.tmpdir))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout_text + result.stderr_text
         expected_rc = exit_codes.AVOCADO_ALL_OK
@@ -511,98 +432,80 @@ class OutputPluginTest(unittest.TestCase):
         self.check_output_files(debug_log)
 
     def test_verify_whiteboard_save(self):
-        tmpfile = tempfile.mktemp()
-        try:
-            config = os.path.join(self.tmpdir, "conf.ini")
-            content = ("[datadir.paths]\nlogs_dir = %s"
-                       % os.path.relpath(self.tmpdir, "."))
-            script.Script(config, content).save()
-            cmd_line = ('%s --config %s --show all run '
-                        '--sysinfo=off whiteboard.py --json %s'
-                        % (AVOCADO, config, tmpfile))
-            result = process.run(cmd_line, ignore_status=True)
-            expected_rc = exit_codes.AVOCADO_ALL_OK
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            with open(tmpfile, 'r') as fp:
-                json_results = json.load(fp)
-                logfile = json_results['tests'][0]['logfile']
-                debug_dir = os.path.dirname(logfile)
-                whiteboard_path = os.path.join(debug_dir, 'whiteboard')
-                self.assertTrue(os.path.exists(whiteboard_path),
-                                'Missing whiteboard file %s' % whiteboard_path)
-        finally:
-            try:
-                os.remove(tmpfile)
-            except OSError:
-                pass
+        tmpfile = tempfile.mktemp(dir=self.tmpdir)
+        config = os.path.join(self.tmpdir, "conf.ini")
+        content = ("[datadir.paths]\nlogs_dir = %s"
+                   % os.path.relpath(self.tmpdir, "."))
+        script.Script(config, content).save()
+        cmd_line = ('%s --config %s --show all run '
+                    '--sysinfo=off whiteboard.py --json %s'
+                    % (AVOCADO, config, tmpfile))
+        result = process.run(cmd_line, ignore_status=True)
+        expected_rc = exit_codes.AVOCADO_ALL_OK
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        with open(tmpfile, 'r') as fp:
+            json_results = json.load(fp)
+            logfile = json_results['tests'][0]['logfile']
+            debug_dir = os.path.dirname(logfile)
+            whiteboard_path = os.path.join(debug_dir, 'whiteboard')
+            self.assertTrue(os.path.exists(whiteboard_path),
+                            'Missing whiteboard file %s' % whiteboard_path)
 
     @unittest.skipIf(image_output_uncapable(),
                      "Uncapable of generating images with PIL library")
     def test_gendata(self):
-        tmpfile = tempfile.mktemp()
-        try:
-            cmd_line = ("%s run --job-results-dir %s "
-                        "--sysinfo=off gendata.py --json %s" %
-                        (AVOCADO, self.tmpdir, tmpfile))
-            result = process.run(cmd_line, ignore_status=True)
-            expected_rc = exit_codes.AVOCADO_ALL_OK
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            with open(tmpfile, 'r') as fp:
-                json_results = json.load(fp)
-                bsod_dir = None
-                json_dir = None
-                for test in json_results['tests']:
-                    if "test_bsod" in test['id']:
-                        bsod_dir = test['logfile']
-                    elif "test_json" in test['id']:
-                        json_dir = test['logfile']
-                self.assertTrue(bsod_dir, "Failed to get test_bsod output "
-                                "directory")
-                self.assertTrue(json_dir, "Failed to get test_json output "
-                                "directory")
-                bsod_dir = os.path.join(os.path.dirname(bsod_dir), "data",
-                                        "bsod.png")
-                json_dir = os.path.join(os.path.dirname(json_dir), "data",
-                                        "test.json")
-                self.assertTrue(os.path.exists(bsod_dir), "File %s produced by"
-                                "test does not exist" % bsod_dir)
-                self.assertTrue(os.path.exists(json_dir), "File %s produced by"
-                                "test does not exist" % json_dir)
-        finally:
-            try:
-                os.remove(tmpfile)
-            except OSError:
-                pass
+        tmpfile = tempfile.mktemp(dir=self.tmpdir)
+        cmd_line = ("%s run --job-results-dir %s "
+                    "--sysinfo=off gendata.py --json %s" %
+                    (AVOCADO, self.tmpdir, tmpfile))
+        result = process.run(cmd_line, ignore_status=True)
+        expected_rc = exit_codes.AVOCADO_ALL_OK
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        with open(tmpfile, 'r') as fp:
+            json_results = json.load(fp)
+            bsod_dir = None
+            json_dir = None
+            for test in json_results['tests']:
+                if "test_bsod" in test['id']:
+                    bsod_dir = test['logfile']
+                elif "test_json" in test['id']:
+                    json_dir = test['logfile']
+            self.assertTrue(bsod_dir, "Failed to get test_bsod output "
+                            "directory")
+            self.assertTrue(json_dir, "Failed to get test_json output "
+                            "directory")
+            bsod_dir = os.path.join(os.path.dirname(bsod_dir), "data",
+                                    "bsod.png")
+            json_dir = os.path.join(os.path.dirname(json_dir), "data",
+                                    "test.json")
+            self.assertTrue(os.path.exists(bsod_dir), "File %s produced by"
+                            "test does not exist" % bsod_dir)
+            self.assertTrue(os.path.exists(json_dir), "File %s produced by"
+                            "test does not exist" % json_dir)
 
     def test_redirect_output(self):
-        redirected_output_path = tempfile.mktemp()
-        try:
-            cmd_line = ('%s run --job-results-dir %s '
-                        '--sysinfo=off passtest.py > %s'
-                        % (AVOCADO, self.tmpdir, redirected_output_path))
-            result = process.run(cmd_line, ignore_status=True, shell=True)
-            output = result.stdout + result.stderr
-            expected_rc = exit_codes.AVOCADO_ALL_OK
-            self.assertEqual(result.exit_status, expected_rc,
-                             "Avocado did not return rc %d:\n%s" %
-                             (expected_rc, result))
-            self.assertEqual(output, b'',
-                             'After redirecting to file, output is not empty: %s' % output)
-            with open(redirected_output_path, 'r') as redirected_output_file_obj:
-                redirected_output = redirected_output_file_obj.read()
-                for code in TermSupport.ESCAPE_CODES:
-                    self.assertNotIn(code, redirected_output,
-                                     'Found terminal support code %s in redirected output\n%s' %
-                                     (code, redirected_output))
-        finally:
-            try:
-                os.remove(redirected_output_path)
-            except OSError:
-                pass
+        redirected_output_path = tempfile.mktemp(dir=self.tmpdir)
+        cmd_line = ('%s run --job-results-dir %s '
+                    '--sysinfo=off passtest.py > %s'
+                    % (AVOCADO, self.tmpdir, redirected_output_path))
+        result = process.run(cmd_line, ignore_status=True, shell=True)
+        output = result.stdout + result.stderr
+        expected_rc = exit_codes.AVOCADO_ALL_OK
+        self.assertEqual(result.exit_status, expected_rc,
+                         "Avocado did not return rc %d:\n%s" %
+                         (expected_rc, result))
+        self.assertEqual(output, b'',
+                         'After redirecting to file, output is not empty: %s' % output)
+        with open(redirected_output_path, 'r') as redirected_output_file_obj:
+            redirected_output = redirected_output_file_obj.read()
+            for code in TermSupport.ESCAPE_CODES:
+                self.assertNotIn(code, redirected_output,
+                                 'Found terminal support code %s in redirected output\n%s' %
+                                 (code, redirected_output))
 
     @unittest.skipIf(perl_tap_parser_uncapable(),
                      "Uncapable of using Perl TAP::Parser library")
@@ -631,7 +534,6 @@ class OutputPluginTest(unittest.TestCase):
         self.assertEqual(result.exit_status, expected_rc,
                          ("avocado run to broken pipe did not return "
                           "rc %d:\n%s" % (expected_rc, result)))
-        self.assertEqual(len(result.stderr.splitlines()), 1)
         self.assertIn(b"whacky-unknown-command", result.stderr)
         self.assertIn(b"not found", result.stderr)
         self.assertNotIn(b"Avocado crashed", result.stderr)

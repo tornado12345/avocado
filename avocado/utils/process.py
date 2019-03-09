@@ -18,6 +18,7 @@ Functions dedicated to find and run external commands.
 
 import errno
 import fnmatch
+import glob
 import logging
 import os
 import re
@@ -39,6 +40,7 @@ from . import gdb
 from . import runtime
 from . import path
 from . import genio
+from .wait import wait_for
 
 log = logging.getLogger('avocado.test')
 stdout_log = logging.getLogger('avocado.test.stdout')
@@ -82,6 +84,10 @@ class CmdError(Exception):
         self.result = result
         self.additional_text = additional_text
 
+    def __str__(self):
+        return ("Command '%s' failed.\nstdout: %r\nstderr: %r\nadditional_info: %s" %
+                (self.command, self.result.stdout, self.result.stderr, self.additional_text))
+
 
 def can_sudo(cmd=None):
     """
@@ -122,12 +128,20 @@ def pid_exists(pid):
     return True
 
 
-def safe_kill(pid, signal):
+def safe_kill(pid, signal):  # pylint: disable=W0621
     """
     Attempt to send a signal to a given process that may or may not exist.
 
     :param signal: Signal number.
     """
+    if get_owner_id(int(pid)) == 0:
+        kill_cmd = 'kill -%d %d' % (int(signal), int(pid))
+        try:
+            run(kill_cmd, sudo=True)
+            return True
+        except Exception:
+            return False
+
     try:
         os.kill(pid, signal)
         return True
@@ -135,7 +149,59 @@ def safe_kill(pid, signal):
         return False
 
 
-def kill_process_tree(pid, sig=signal.SIGKILL, send_sigcont=True):
+def get_parent_pid(pid):
+    """
+    Returns the parent PID for the given process
+
+    TODO: this is currently Linux specific, and needs to implement
+    similar features for other platforms.
+
+    :param pid: The PID of child process
+    :returns: The parent PID
+    :rtype: int
+    """
+    with open('/proc/%d/stat' % pid, 'rb') as proc_stat:
+        parent_pid = proc_stat.read().split(b' ')[-49]
+        return int(parent_pid)
+
+
+def _get_pid_from_proc_pid_stat(proc_path):
+    match = re.match(r'\/proc\/([0-9]+)\/.*', proc_path)
+    if match is not None:
+        return int(match.group(1))
+
+
+def get_children_pids(parent_pid, recursive=False):
+    """
+    Returns the children PIDs for the given process
+
+    TODO: this is currently Linux specific, and needs to implement
+    similar features for other platforms.
+
+    :param parent_pid: The PID of parent child process
+    :returns: The PIDs for the children processes
+    :rtype: list of int
+    """
+    proc_stats = glob.glob('/proc/[123456789]*/stat')
+    children = []
+    for proc_stat in proc_stats:
+        try:
+            with open(proc_stat, 'rb') as proc_stat_fp:
+                this_parent_pid = int(proc_stat_fp.read().split(b' ')[-49])
+        except IOError:
+            continue
+
+        if this_parent_pid == parent_pid:
+            children.append(_get_pid_from_proc_pid_stat(proc_stat))
+
+    if recursive:
+        for child in children:
+            children.extend(get_children_pids(child))
+    return children
+
+
+def kill_process_tree(pid, sig=signal.SIGKILL, send_sigcont=True,
+                      timeout=0):
     """
     Signal a process and all of its children.
 
@@ -143,17 +209,42 @@ def kill_process_tree(pid, sig=signal.SIGKILL, send_sigcont=True):
 
     :param pid: The pid of the process to signal.
     :param sig: The signal to send to the processes.
+    :param send_sigcont: Send SIGCONT to allow killing stopped processes
+    :param timeout: How long to wait for the pid(s) to die
+                    (negative=infinity, 0=don't wait,
+                    positive=number_of_seconds)
+    :return: list of all PIDs we sent signal to
+    :rtype: list
     """
-    # TODO: This relies on the GNU version of ps (need to fix MacOS support)
+    def _all_pids_dead(killed_pids):
+        for pid in killed_pids:
+            if pid_exists(pid):
+                return False
+        return True
+
+    if timeout > 0:
+        start = time.time()
+
     if not safe_kill(pid, signal.SIGSTOP):
-        return
-    children = system_output("ps --ppid=%d -o pid=" % pid, ignore_status=True,
-                             verbose=False).split()
-    for child in children:
-        kill_process_tree(int(child), sig)
+        return [pid]
+    killed_pids = [pid]
+    for child in get_children_pids(pid):
+        killed_pids.extend(kill_process_tree(int(child), sig, False))
     safe_kill(pid, sig)
     if send_sigcont:
-        safe_kill(pid, signal.SIGCONT)
+        for pid in killed_pids:
+            safe_kill(pid, signal.SIGCONT)
+    if timeout == 0:
+        return killed_pids
+    elif timeout > 0:
+        if not wait_for(_all_pids_dead, timeout + start - time.time(),
+                        step=0.01, args=(killed_pids[::-1],)):
+            raise RuntimeError("Timeout reached when waiting for pid %s "
+                               "and children to die (%s)" % (pid, timeout))
+    else:
+        while not _all_pids_dead(killed_pids[::-1]):
+            time.sleep(0.01)
+    return killed_pids
 
 
 def kill_process_by_pattern(pattern):
@@ -192,31 +283,6 @@ def process_in_ptree_is_defunct(ppid):
             defunct = True
             break
     return defunct
-
-
-def get_children_pids(ppid, recursive=False):
-    """
-    Get all PIDs of children/threads of parent ppid
-    param ppid: parent PID
-    param recursive: True to return all levels of sub-processes
-    return: list of PIDs of all children/threads of ppid
-    """
-    # TODO: This relies on the GNU version of ps (need to fix MacOS support)
-
-    cmd = "ps -L --ppid=%d -o lwp"
-
-    # Getting first level of sub-processes
-    children = system_output(cmd % ppid, verbose=False).split(b'\n')[1:]
-    if not recursive:
-        return children
-
-    # Recursion to get all levels of sub-processes
-    for child in children:
-        children.extend(system_output(cmd % int(child),
-                                      verbose=False,
-                                      ignore_status=True).split(b'\n')[1:])
-
-    return children
 
 
 def binary_from_shell_cmd(cmd):
@@ -274,8 +340,8 @@ class CmdResult(object):
     :param pid: ID of the process
     :type pid: int
     :param encoding: the encoding to use for the text version
-                     of stdout and stderr, with the default being
-                     Python's own (:func:`sys.getdefaultencoding`).
+                     of stdout and stderr, by default
+                     :data:`avocado.utils.astring.ENCODING`
     :type encoding: str
     """
 
@@ -292,8 +358,14 @@ class CmdResult(object):
         self.interrupted = False
         self.pid = pid
         if encoding is None:
-            encoding = sys.getdefaultencoding()
+            encoding = astring.ENCODING
         self.encoding = encoding
+
+    def __str__(self):
+        return '\n'.join("%s: %r" % (key, getattr(self, key, "MISSING"))
+                         for key in ('command', 'exit_status', 'duration',
+                                     'interrupted', 'pid', 'encoding',
+                                     'stdout', 'stderr'))
 
     @property
     def stdout_text(self):
@@ -380,7 +452,8 @@ class FDDrainer(object):
                 bfr += tmp
                 if tmp.endswith(b'\n'):
                     for line in bfr.splitlines():
-                        line = astring.to_text(line, self._result.encoding)
+                        line = astring.to_text(line, self._result.encoding,
+                                               'replace')
                         if self._logger is not None:
                             self._logger.debug(self._logger_prefix, line)
                         if self._stream_logger is not None:
@@ -389,11 +462,11 @@ class FDDrainer(object):
         # Write the rest of the bfr unfinished by \n
         if self._verbose and bfr:
             for line in bfr.splitlines():
-                line = astring.to_text(line, self._result.encoding)
+                line = astring.to_text(line, self._result.encoding, 'replace')
                 if self._logger is not None:
                     self._logger.debug(self._logger_prefix, line)
                 if self._stream_logger is not None:
-                    self._stream_logger.debug(astring.to_text(line))
+                    self._stream_logger.debug(line)
 
     def start(self):
         self._thread = threading.Thread(target=self._drainer, name=self.name)
@@ -473,14 +546,13 @@ class SubProcess(object):
                     main thread finishes and also it allows those daemons
                     to be running after the process finishes.
         :param encoding: the encoding to use for the text representation
-                         of the command result stdout and stderr, with the
-                         default being Python's own, that is,
-                         (:func:`sys.getdefaultencoding`).
+                         of the command result stdout and stderr, by default
+                         :data:`avocado.utils.astring.ENCODING`
         :type encoding: str
         :raises: ValueError if incorrect values are given to parameters
         """
         if encoding is None:
-            encoding = sys.getdefaultencoding()
+            encoding = astring.ENCODING
         if sudo:
             self.cmd = self._prepend_sudo(cmd, shell)
         else:
@@ -622,7 +694,7 @@ class SubProcess(object):
                 self._stdout_drainer.start()
                 self._stderr_drainer.start()
 
-            def signal_handler(signum, frame):
+            def signal_handler(signum, frame):  # pylint: disable=W0613
                 self.result.interrupted = "signal/ctrl+c"
                 self.wait()
                 signal.default_int_handler()
@@ -716,7 +788,15 @@ class SubProcess(object):
         :param sig: Signal to send.
         """
         self._init_subprocess()
-        self._popen.send_signal(sig)
+        if self.is_sudo_enabled():
+            for child_pid in get_children_pids(self.get_pid()):
+                kill_child_cmd = 'kill -%d %d' % (int(sig), child_pid)
+                try:
+                    run(kill_child_cmd, sudo=True)
+                except Exception:
+                    continue
+        else:
+            self._popen.send_signal(sig)
 
     def poll(self):
         """
@@ -728,14 +808,64 @@ class SubProcess(object):
             self._fill_results(rc)
         return rc
 
-    def wait(self):
+    def wait(self, timeout=None, sig=signal.SIGTERM):
         """
         Call the subprocess poll() method, fill results if rc is not None.
+
+        :param timeout: Time (seconds) we'll wait until the process is
+                        finished. If it's not, we'll try to terminate it
+                        and it's children using ``sig`` and get a
+                        status. When the process refuses to die
+                        within 1s we use SIGKILL and report the status
+                        (be it exit_code or zombie)
+        :param sig: Signal to send to the process in case it did not end after
+                    the specified timeout.
         """
+        def nuke_myself():
+            self.result.interrupted = ("timeout after %ss"
+                                       % (time.time() - self.start_time))
+            try:
+                kill_process_tree(self.get_pid(), sig, timeout=1)
+            except Exception:
+                try:
+                    kill_process_tree(self.get_pid(), signal.SIGKILL,
+                                      timeout=1)
+                    log.warning("Process '%s' refused to die in 1s after "
+                                "sending %s to, destroyed it successfully "
+                                "using SIGKILL.", self.cmd, sig)
+                except Exception:
+                    log.error("Process '%s' refused to die in 1s after "
+                              "sending %s, followed by SIGKILL, probably "
+                              "dealing with a zombie process.", self.cmd,
+                              sig)
+
         self._init_subprocess()
-        rc = self._popen.wait()
-        if rc is not None:
-            self._fill_results(rc)
+        rc = None
+
+        if timeout is None:
+            rc = self._popen.wait()
+        elif timeout > 0.0:
+            timer = threading.Timer(timeout, nuke_myself)
+            try:
+                timer.start()
+                rc = self._popen.wait()
+            finally:
+                timer.cancel()
+
+        if rc is None:
+            stop_time = time.time() + 1
+            while time.time() < stop_time:
+                rc = self._popen.poll()
+                if rc is not None:
+                    break
+            else:
+                nuke_myself()
+                rc = self._popen.poll()
+
+        if rc is None:
+            # If all this work fails, we're dealing with a zombie process.
+            raise AssertionError('Zombie Process %s' % self._popen.pid)
+        self._fill_results(rc)
         return rc
 
     def stop(self):
@@ -757,6 +887,20 @@ class SubProcess(object):
         self._init_subprocess()
         return self._popen.pid
 
+    def get_user_id(self):
+        """
+        Reports user id of this process
+        """
+        self._init_subprocess()
+        return get_owner_id(self.get_pid())
+
+    def is_sudo_enabled(self):
+        """
+        Returns whether the subprocess is running with sudo enabled
+        """
+        self._init_subprocess()
+        return self.get_user_id() == 0
+
     def run(self, timeout=None, sig=signal.SIGTERM):
         """
         Start a process and wait for it to end, returning the result attr.
@@ -766,7 +910,10 @@ class SubProcess(object):
 
         :param timeout: Time (seconds) we'll wait until the process is
                         finished. If it's not, we'll try to terminate it
-                        and get a status.
+                        and it's children using ``sig`` and get a
+                        status. When the process refuses to die
+                        within 1s we use SIGKILL and report the status
+                        (be it exit_code or zombie)
         :type timeout: float
         :param sig: Signal to send to the process in case it did not end after
                     the specified timeout.
@@ -774,36 +921,8 @@ class SubProcess(object):
         :returns: The command result object.
         :rtype: A :class:`CmdResult` instance.
         """
-        def timeout_handler():
-            self.send_signal(sig)
-            self.result.interrupted = "timeout after %ss" % timeout
-
         self._init_subprocess()
-
-        if timeout is None:
-            self.wait()
-        elif timeout > 0.0:
-            timer = threading.Timer(timeout, timeout_handler)
-            try:
-                timer.start()
-                self.wait()
-            finally:
-                timer.cancel()
-
-        if self.result.exit_status is None:
-            stop_time = time.time() + 1
-            while time.time() < stop_time:
-                self.poll()
-                if self.result.exit_status is not None:
-                    break
-            else:
-                self.kill()
-                self.poll()
-
-        # If all this work fails, we're dealing with a zombie process.
-        e_msg = 'Zombie Process %s' % self._popen.pid
-        assert self.result.exit_status is not None, e_msg
-
+        self.wait(timeout, sig)
         return self.result
 
 
@@ -835,36 +954,26 @@ class GDBSubProcess(object):
     Runs a subprocess inside the GNU Debugger
     """
 
-    def __init__(self, cmd, verbose=True,
-                 allow_output_check=None, shell=False,
-                 env=None, sudo=False, ignore_bg_processes=False, encoding=None):
+    def __init__(self, cmd, verbose=True, allow_output_check=None, shell=False,  # pylint: disable=W0613
+                 env=None, sudo=False, ignore_bg_processes=False, encoding=None):  # pylint: disable=W0613
         """
         Creates the subprocess object, stdout/err, reader threads and locks.
 
         :param cmd: Command line to run.
         :type cmd: str
-        :param verbose: Whether to log the command run and stdout/stderr.
-                        Currently unused and provided for compatibility only.
-        :type verbose: bool
-        :param allow_output_check: Whether to log the command stream outputs
-                                   (stdout and stderr) in the test stream
-                                   files. Valid values: 'stdout', for
-                                   allowing only standard output, 'stderr',
-                                   to allow only standard error, 'all',
-                                   to allow both standard output and error
-                                   (default), and 'none', to allow
-                                   none to be recorded. Currently unused and
-                                   provided for compatibility only.
-        :type allow_output_check: str
-        :param sudo: This param will be ignored in this implementation,
-                     since the GDB wrapping code does not have support to run
-                     commands under sudo just yet.
-        :param ignore_bg_processes: This param will be ignored in this
-                     implementation, since the GDB wrapping code does not have
-                     support to run commands in that way.
+        :params verbose: Currently ignored in GDBSubProcess
+        :param allow_output_check: Currently ignored in GDBSubProcess
+        :param shell: Currently ignored in GDBSubProcess
+        :param env: Currently ignored in GDBSubProcess
+        :param sudo: Currently ignored in GDBSubProcess
+        :param ignore_bg_processes: Currently ignored in GDBSubProcess
+        :param encoding: the encoding to use for the text representation
+                         of the command result stdout and stderr, by default
+                         :data:`avocado.utils.astring.ENCODING`
+        :type encoding: str
         """
         if encoding is None:
-            encoding = sys.getdefaultencoding()
+            encoding = astring.ENCODING
         self.cmd = cmd
 
         self.args = cmd_split(cmd)
@@ -880,16 +989,16 @@ class GDBSubProcess(object):
     def _get_breakpoints(self):
         breakpoints = []
         for expr in gdb.GDB_RUN_BINARY_NAMES_EXPR:
-            expr_binary_name, breakpoint = split_gdb_expr(expr)
+            expr_binary_name, break_point = split_gdb_expr(expr)
             binary_name = os.path.basename(self.binary)
             if expr_binary_name == binary_name:
-                breakpoints.append(breakpoint)
+                breakpoints.append(break_point)
 
         if not breakpoints:
             breakpoints.append(gdb.GDB.DEFAULT_BREAK)
         return breakpoints
 
-    def create_and_wait_on_resume_fifo(self, path):
+    def create_and_wait_on_resume_fifo(self, path):  # pylint: disable=W0621
         """
         Creates a FIFO file and waits until it's written to
 
@@ -909,11 +1018,11 @@ class GDBSubProcess(object):
         if current_test is not None:
             binary_name = os.path.basename(self.binary)
             script_name = '%s.gdb.connect_commands' % binary_name
-            path = os.path.join(current_test.outputdir, script_name)
-            with open(path, 'w') as cmds_file:
+            script_path = os.path.join(current_test.outputdir, script_name)
+            with open(script_path, 'w') as cmds_file:
                 cmds_file.write('file %s\n' % os.path.abspath(self.binary))
                 cmds_file.write('target extended-remote :%s\n' % self.gdb_server.port)
-            return path
+            return script_path
 
     def generate_gdb_connect_sh(self):
         cmds = self.generate_gdb_connect_cmds()
@@ -948,7 +1057,7 @@ class GDBSubProcess(object):
         shutil.copy(self.binary, runtime.CURRENT_TEST.outputdir)
         return core_path
 
-    def handle_break_hit(self, response):
+    def handle_break_hit(self, response):  # pylint: disable=W0613
         self.gdb.disconnect()
         script_path, fifo_path = self.generate_gdb_connect_sh()
 
@@ -967,7 +1076,7 @@ class GDBSubProcess(object):
         runtime.CURRENT_TEST.paused = ''
         return ret
 
-    def handle_fatal_signal(self, response):
+    def handle_fatal_signal(self, response):  # pylint: disable=W0613
         script_path, fifo_path = self.generate_gdb_connect_sh()
 
         msg = ("\n\nTEST PAUSED because inferior process received a FATAL SIGNAL. "
@@ -1087,7 +1196,7 @@ class GDBSubProcess(object):
             for command in genio.read_all_lines(prerun_commands_path):
                 self.gdb.cmd(command)
 
-    def run(self, timeout=None):
+    def run(self, timeout=None):  # pylint: disable=W0613
         for b in self._get_breakpoints():
             self.gdb.set_break(b, ignore_error=True)
 
@@ -1172,7 +1281,7 @@ def should_run_inside_wrapper(cmd):
 
     :param cmd: the command arguments, from where we extract the binary name
     """
-    global CURRENT_WRAPPER
+    global CURRENT_WRAPPER  # pylint: disable=W0603
     CURRENT_WRAPPER = None
     args = cmd_split(cmd)
     cmd_binary_name = args[0]
@@ -1254,16 +1363,15 @@ def run(cmd, timeout=None, verbose=True, ignore_status=False,
                  prompted. If that's not the case, the command will
                  straight out fail.
     :param encoding: the encoding to use for the text representation
-                     of the command result stdout and stderr, with the
-                     default being Python's own, that is,
-                     (:func:`sys.getdefaultencoding`).
+                     of the command result stdout and stderr, by default
+                     :data:`avocado.utils.astring.ENCODING`
     :type encoding: str
 
     :return: An :class:`CmdResult` object.
     :raise: :class:`CmdError`, if ``ignore_status=False``.
     """
     if encoding is None:
-        encoding = sys.getdefaultencoding()
+        encoding = astring.ENCODING
     klass = get_sub_process_klass(cmd)
     sp = klass(cmd=cmd, verbose=verbose,
                allow_output_check=allow_output_check, shell=shell, env=env,
@@ -1324,9 +1432,8 @@ def system(cmd, timeout=None, verbose=True, ignore_status=False,
                  prompted. If that's not the case, the command will
                  straight out fail.
     :param encoding: the encoding to use for the text representation
-                     of the command result stdout and stderr, with the
-                     default being Python's own, that is,
-                     (:func:`sys.getdefaultencoding`).
+                     of the command result stdout and stderr, by default
+                     :data:`avocado.utils.astring.ENCODING`
     :type encoding: str
 
     :return: Exit code.
@@ -1392,9 +1499,8 @@ def system_output(cmd, timeout=None, verbose=True, ignore_status=False,
     :param strip_trail_nl: Whether to strip the trailing newline
     :type strip_trail_nl: bool
     :param encoding: the encoding to use for the text representation
-                     of the command result stdout and stderr, with the
-                     default being Python's own, that is,
-                     (:func:`sys.getdefaultencoding`).
+                     of the command result stdout and stderr, by default
+                     :data:`avocado.utils.astring.ENCODING`
     :type encoding: str
 
     :return: Command output.
@@ -1532,3 +1638,15 @@ def getstatusoutput(cmd, timeout=None, verbose=False, ignore_status=True,
     if text[-1:] == '\n':
         text = text[:-1]
     return (sts, text)
+
+
+def get_owner_id(pid):
+    """
+    Get the owner's user id of a process
+    param pid: process id
+    return: user id of the process owner
+    """
+    try:
+        return os.stat('/proc/%d/' % pid).st_uid
+    except OSError:
+        return None

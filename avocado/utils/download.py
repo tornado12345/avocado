@@ -22,10 +22,7 @@ import os
 import socket
 import shutil
 
-try:
-    from urllib2 import urlopen
-except ImportError:
-    from urllib.request import urlopen
+from six.moves.urllib.request import urlopen
 
 from . import aurl
 from . import output
@@ -48,7 +45,14 @@ def url_open(url, data=None, timeout=5):
     old_timeout = socket.getdefaulttimeout()
     socket.setdefaulttimeout(timeout)
     try:
-        return urlopen(url, data=data)
+        result = urlopen(url, data=data)
+        msg = ('Retrieved URL "%s": content-length %s, date: "%s", '
+               'last-modified: "%s"')
+        logging.debug(msg, url,
+                      result.headers.get('Content-Length', 'UNKNOWN'),
+                      result.headers.get('Date', 'UNKNOWN'),
+                      result.headers.get('Last-Modified', 'UNKNOWN'))
+        return result
     finally:
         socket.setdefaulttimeout(old_timeout)
 
@@ -164,7 +168,7 @@ def get_file(src, dst, permissions=None, hash_expected=None,
     while not hash_file == hash_expected:
         hash_file = _verify_hash(_get_file(src, dst, permissions))
         if hash_file != hash_expected:
-            log.error("It seems that dst %s is corrupted" % dst)
+            log.error("It seems that dst %s is corrupted", dst)
             download_failures += 1
         if download_failures > download_retries:
             raise EnvironmentError("Failed to retrieve %s. "

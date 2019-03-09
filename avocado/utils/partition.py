@@ -24,11 +24,11 @@ Utility for handling partitions.
 
 import logging
 import os
-import time
-
-import fcntl
+import hashlib
+import tempfile
 
 from . import process
+from . import filelock
 
 
 LOG = logging.getLogger(__name__)
@@ -51,29 +51,29 @@ class PartitionError(Exception):
 
 
 class MtabLock(object):
-    mtab = None
+    device = "/etc/mtab"
+
+    def __init__(self, timeout=60):
+        self.timeout = timeout
+        self.mtab = None
+        device_hash = hashlib.sha1(self.device.encode("utf-8")).hexdigest()
+        lock_filename = os.path.join(tempfile.gettempdir(), device_hash)
+        self.lock = filelock.FileLock(lock_filename, timeout=self.timeout)
 
     def __enter__(self):
-        self.mtab = open("/etc/mtab")
-        end_time = time.time() + 60
-        while time.time() < end_time:
-            try:
-                fcntl.flock(self.mtab.fileno(),
-                            fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except IOError as details:
-                if details.errno == 11:
-                    time.sleep(0.1)
-                else:
-                    raise
-        else:
-            raise PartitionError(self, "Unable to obtain '/etc/mtab' lock "
-                                 "in 60s")
+        try:
+            self.lock.__enter__()
+        except (filelock.LockFailed, filelock.AlreadyLocked) as e:
+            reason = "Unable to obtain '%s' lock in %ds" % (self.device,
+                                                            self.timeout)
+            raise PartitionError(self, reason, e)
+        self.mtab = open(self.device)
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
         if self.mtab:
             self.mtab.close()
+        self.lock.__exit__(exc_type, exc_value, exc_traceback)
 
 
 class Partition(object):
@@ -109,9 +109,9 @@ class Partition(object):
         """
         # list mounted file systems
         devices = [line.split()[0]
-                   for line in process.system_output('mount').splitlines()]
+                   for line in process.getoutput('mount').splitlines()]
         # list mounted swap devices
-        swaps = process.system_output('swapon -s').splitlines()
+        swaps = process.getoutput('swapon -s').splitlines()
         devices.extend([line.split()[0] for line in swaps
                         if line.startswith('/')])
         return devices
@@ -122,7 +122,7 @@ class Partition(object):
         Lists the mount points.
         """
         return [line.split()[2]
-                for line in process.system_output('mount').splitlines()]
+                for line in process.getoutput('mount').splitlines()]
 
     def get_mountpoint(self, filename=None):
         """
@@ -242,6 +242,27 @@ class Partition(object):
         # Update the fstype as the mount command passed
         self.fstype = fstype
 
+    def _get_pids_on_mountpoint(self, mnt):
+        """
+        Returns a list of processes using a given mountpoint
+        """
+        try:
+            FileNotFoundError
+        except NameError:
+            FileNotFoundError = IOError   # pylint: disable=W0622
+        try:
+            cmd = "lsof " + mnt
+            out = process.system_output(cmd, sudo=True)
+            return [int(line.split()[1]) for line in out.splitlines()[1:]]
+        except OSError as details:
+            msg = 'Could not run lsof to identify processes using "%s"' % mnt
+            LOG.error(msg)
+            raise PartitionError(self, msg, details)
+        except process.CmdError as details:
+            msg = 'Failure executing "%s"' % cmd
+            LOG.error(msg)
+            raise PartitionError(self, msg, details)
+
     def _unmount_force(self, mountpoint):
         """
         Kill all other jobs accessing this partition and force unmount it.
@@ -249,15 +270,11 @@ class Partition(object):
         :return: None
         :raise PartitionError: On critical failure
         """
-        # Human readable list of processes
-        out = process.system_output("lsof " + mountpoint, ignore_status=True)
-        # Try to kill all pids
-        for pid in (line.split()[1] for line in out.splitlines()[1:]):
+        for pid in self._get_pids_on_mountpoint(mountpoint):
             try:
-                process.system("kill -9 %s" % pid, ignore_status=True,
-                               sudo=True)
-            except OSError:
-                pass
+                process.system("kill -9 %d" % pid, ignore_status=True, sudo=True)
+            except process.CmdError as details:
+                raise PartitionError(self, "Failed to kill processes", details)
         # Unmount
         try:
             process.run("umount -f %s" % mountpoint, sudo=True)

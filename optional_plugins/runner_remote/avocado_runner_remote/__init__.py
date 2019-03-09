@@ -177,7 +177,8 @@ def _update_fabric_env(method):
                               user=args[0].username,
                               key_filename=args[0].key_filename,
                               password=args[0].password,
-                              port=args[0].port)
+                              port=args[0].port,
+                              use_ssh_config=True)
         return method(*args, **kwargs)
     return wrapper
 
@@ -192,7 +193,7 @@ class DummyLoader(loader.TestLoader):
     def __init__(self, args, extra_params):
         super(DummyLoader, self).__init__(args, extra_params)
 
-    def discover(self, url, which_tests=loader.DEFAULT):
+    def discover(self, url, which_tests=loader.DiscoverMode.DEFAULT):
         return [(MockingTest, {'name': url})]
 
     @staticmethod
@@ -432,13 +433,28 @@ class RemoteTestRunner(TestRunner):
         :param references: a string with test references.
         :return: a dictionary with test results.
         """
-        extra_params = []
-        mux_files = getattr(self.job.args, 'mux_yaml', [])
-        if mux_files:
-            extra_params.append("-m %s" % " ".join(mux_files))
+        def arg_to_dest(arg):
+            """
+            Turns long argparse arguments into default dest
+            """
+            return arg[2:].replace('-', '_')
 
-        if getattr(self.job.args, "dry_run", False):
-            extra_params.append("--dry-run")
+        extra_params = []
+        # bool or nargs
+        for arg in ["--mux-yaml", "--dry-run",
+                    "--filter-by-tags-include-empty"]:
+            value = getattr(self.job.args, arg_to_dest(arg), None)
+            if value is True:
+                extra_params.append(arg)
+            elif value:
+                extra_params.append("%s %s" % (arg, " ".join(value)))
+        # append
+        for arg in ["--filter-by-tags"]:
+            value = getattr(self.job.args, arg_to_dest(arg), None)
+            if value:
+                join = ' %s ' % arg
+                extra_params.append("%s %s" % (arg, join.join(value)))
+
         references_str = " ".join(references)
 
         avocado_cmd = ('avocado run --force-job-id %s --json - '
@@ -458,7 +474,8 @@ class RemoteTestRunner(TestRunner):
         try:
             json_result = self._parse_json_response(result.stdout)
         except:
-            stacktrace.log_exc_info(sys.exc_info(), logger='avocado.debug')
+            stacktrace.log_exc_info(sys.exc_info(),
+                                    logger='avocado.app.debug')
             raise exceptions.JobError(result.stdout)
 
         for t_dict in json_result['tests']:
@@ -578,7 +595,6 @@ class RemoteTestRunner(TestRunner):
         :warning: It might be called on `setup` exceptions, so things
                   initialized during `setup` might not yet be initialized.
         """
-        pass
 
 
 class RemoteCLI(CLI):

@@ -13,16 +13,18 @@
 # Copyright: Red Hat Inc. 2017
 # Author: Cleber Rosa <crosa@redhat.com>
 
+import os
 import sys
+sys.path.append(os.path.join('..', '..'))
+from avocado.utils import distro
 
 from setuptools import setup, find_packages
 
-
-if sys.version_info[0] == 3:
-    fabric = 'Fabric3'
+detected_distro = distro.detect()
+if detected_distro.name == 'fedora' and int(detected_distro.version) >= 29:
+    fabric = 'Fabric3>=1.1.4,<2.0.0'
 else:
-    fabric = 'fabric'
-
+    fabric = 'Fabric3'
 
 setup(name='avocado-framework-plugin-runner-remote',
       description='Avocado Runner for Remote Execution',

@@ -59,13 +59,13 @@ class AstringTest(unittest.TestCase):
                    123),
                   (u'\u0430\u0432\u043e\u043a\u0430\u0434\xff', 123),
                   ("avok\xc3\xa1do", 123),
-                  ("a\u0430", 123)]
+                  ("a\u0430", 123)]  # pylint: disable=W1402
         str_matrix = ("\xd0\xb0\xd0\xb2\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb4"
                       "\xef\xbf\xbd 123\n"
                       "\xd0\xb0\xd0\xb2\xd0\xbe\xd0\xba\xd0\xb0\xd0\xb4"
                       "\xc3\xbf 123\n"
                       "avok\xc3\xa1do 123\n"
-                      "a\u0430 123")
+                      "a\u0430 123")  # pylint: disable=W1402
         self.assertEqual(astring.tabular_output(matrix), str_matrix)
 
     def test_safe_path(self):
@@ -80,7 +80,7 @@ class AstringTest(unittest.TestCase):
     def test_is_bytes(self):
         """
         Verifies what bytes means, basically that they are the same
-        thing accross Python 2 and 3 and can be decoded into "text"
+        thing across Python 2 and 3 and can be decoded into "text"
         """
         binary = b''
         text = u''
@@ -116,12 +116,16 @@ class AstringTest(unittest.TestCase):
         self.assertTrue(astring.is_text(astring.to_text('', 'ascii')))
         self.assertTrue(astring.is_text(astring.to_text(u'', 'ascii')))
 
-    def test_to_text_decode_utf_8(self):
+    def test_to_text(self):
         text_1 = astring.to_text(b'\xc3\xa1', 'utf-8')
         text_2 = astring.to_text(u'\u00e1', 'utf-8')
         self.assertTrue(astring.is_text(text_1))
-        self.assertTrue(astring.is_text(text_1))
         self.assertEqual(text_1, text_2)
+        self.assertEqual(astring.to_text(Exception(u'\u00e1')),
+                         u"\xe1")
+        # For tuple, dict and others astring.to_text is equivalent of str()
+        # because on py3 it's unicode and on py2 it uses __repr__ (is encoded)
+        self.assertEqual(astring.to_text({u'\xe1': 1}), str({u'\xe1': 1}))
 
 
 if __name__ == '__main__':

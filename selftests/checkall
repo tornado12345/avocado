@@ -1,4 +1,5 @@
 #!/bin/bash
+PYTHON=${PYTHON:-python3}
 ERR=()
 RESULTS_DIR=$(./scripts/avocado config | grep datadir.paths.logs_dir | awk '{print $2}')
 # Very basic version of expanduser
@@ -22,43 +23,25 @@ run_rc() {
 parallel_selftests() {
     local START=$(date +%s)
     local ERR=0
-    local FIND_UNITTESTS=$(readlink -f ./contrib/scripts/avocado-find-unittests)
+    local FIND_UNITTESTS=$(readlink -f ./selftests/list)
     local NO_WORKERS=$(($(cat /proc/cpuinfo | grep -c processor) * 2))
 
     # The directories that may contain files with tests, from the Avocado core
     # and from all optional plugins
-    declare -A DIR_GLOB_MAP
-    DIR_GLOB_MAP[selftests]="selftests/unit/test_*.py selftests/functional/test_*.py selftests/doc/test_*.py"
-    for PLUGIN in $(find optional_plugins -mindepth 1 -maxdepth 1 -type d); do
-        DIR_GLOB_MAP[$PLUGIN]="tests/test_*.py"
-    done;
-
     declare -A TESTS
-    for TEST_DIR in "${!DIR_GLOB_MAP[@]}"; do
-        # tests in core, that is "selftests" expect the regular path, while
-        # python -m unittest module.class.test_name won't work for tests on
-        # plugins without a change of directory because the full path is
-        # not a valid python module (would need __init__.py) in places where
-        # it doesn't make sense
-        if [ "x$TEST_DIR" != "xselftests" ]; then
-            OLD_PWD=$PWD
-            cd $TEST_DIR
-        fi
-        # Use sort -R to randomize the order as longer tests
-        # seems to be likely in the same file
-        THIS_DIR_TESTS=$(${FIND_UNITTESTS} ${DIR_GLOB_MAP[$TEST_DIR]} | sort -R)
+    TESTS[selftests]=$(${PYTHON} ${FIND_UNITTESTS} | sort -R)
+    for PLUGIN in $(find optional_plugins -mindepth 1 -maxdepth 1 -type d); do
+        PLUGIN_BASENAME=$(basename $PLUGIN)
+        THIS_DIR_TESTS=$(${PYTHON} ${FIND_UNITTESTS} --no-base-selftests --plugin-dirs $PLUGIN_BASENAME | sort -R)
         if [ -n "$THIS_DIR_TESTS" ]; then
-            TESTS[$TEST_DIR]=${THIS_DIR_TESTS};
-        fi
-        if [ -n $TEST_DIR ]; then
-            cd $OLD_PWD
+            TESTS[$PLUGIN]=${THIS_DIR_TESTS};
         fi
     done
 
     for TEST_DIR in "${!TESTS[@]}"; do
         if [ "x$TEST_DIR" != "xselftests" ]; then
             OLD_PWD=$PWD
-            cd $TEST_DIR
+            cd $TEST_DIR/tests
         fi
 
         declare -a ALL
@@ -72,7 +55,7 @@ parallel_selftests() {
         for I in $(seq 0 $PER_SLICE $((${#ALL[@]} - 1))); do
             TMP=$(mktemp /tmp/avocado_parallel_unittest_output_XXXXXX)
             TMPS+=("$TMP")
-            ( python -m unittest ${ALL[@]:$I:$PER_SLICE} &> $TMP ) &
+            ( $PYTHON -m unittest ${ALL[@]:$I:$PER_SLICE} &> $TMP ) &
             PIDS+=("$!")
             sleep 0.1
         done
@@ -85,6 +68,18 @@ parallel_selftests() {
                 for FAILURE in $(cat "${TMPS[$I]}" | sed -n 's/\(ERROR\|FAIL\): \([^ ]*\) (\([^)]*\)).*/\3.\2/p'); do
                     FAILED_ONCE+=("$FAILURE")
                 done
+                # On Python 3.4, load errors are not treated as test failures, and we can
+                # not easily tell which test failed to be loaded.  Let's return immediately.
+                grep -q "AttributeError: 'module' object has no attribute" "${TMPS[$I]}"
+                if [ $? == 0 ]; then
+                    echo
+                    echo ----------------------------------------------------------------------
+                    echo "ERROR: failed to load at least 1 test"
+                    echo "Check the following log output for more information:"
+                    cat "${TMPS[$I]}"
+                    echo ----------------------------------------------------------------------
+                    return 1;
+                fi
             else
                 rm ${TMPS[$I]}
             fi
@@ -92,8 +87,8 @@ parallel_selftests() {
         if [ ${#FAILED_ONCE[@]} -gt 0 ]; then
             if [ ${#FAILED_ONCE[@]} -le 24 ]; then
                 echo ${#FAILED_ONCE[@]} failed during parallel execution, trying them in series
-                echo "python -m unittest --failfast ${FAILED_ONCE[@]}"
-                if python -m unittest --failfast ${FAILED_ONCE[@]}; then
+                echo "$PYTHON -m unittest --failfast ${FAILED_ONCE[@]}"
+                if $PYTHON -m unittest --failfast ${FAILED_ONCE[@]}; then
                     echo "All failed tests passed when executed in series"
                     echo
                     for I in $(seq 0 $((${#PIDS[@]} - 1))); do
@@ -114,7 +109,7 @@ parallel_selftests() {
         for I in $(seq 0 $((${#PIDS[@]} - 1))); do
             if [ -e "${TMPS[$I]}" ]; then
                 echo
-                echo python -m unittest ${ALL[@]:$(($I * $PER_SLICE)):$PER_SLICE}
+                echo $PYTHON -m unittest ${ALL[@]:$(($I * $PER_SLICE)):$PER_SLICE}
                 cat "${TMPS[$I]}"
                 rm "${TMPS[$I]}"
             fi
@@ -155,11 +150,16 @@ results_dir_content() {
 }
 
 [ "$SKIP_RESULTSDIR_CHECK" ] || RESULTS_DIR_CONTENT="$(ls $RESULTS_DIR 2> /dev/null)"
-if [ "$TRAVIS" == "true" ]; then
-    run_rc lint 'RESULT=$(mktemp); inspekt lint --exclude=.git --enable W0101,W0102,W0404,W0611,W0612,W0622 &>$RESULT || { cat $RESULT; rm $RESULT; exit -1; }; rm $RESULT'
-else
-    run_rc lint 'inspekt lint --exclude=.git --enable W0101,W0102,W0404,W0611,W0612,W0622'
+
+LINT_CMD="inspekt lint --exclude=.git"
+PYLINT_ENABLE="--enable R0401,W0101,W0102,W0104,W0105,W0106,W0107,W0108,W0109,W0111,W0120,W0122,W0123,W0124,W0125,W0150,W0199,W0211,W0222,W0223,W0232,W0233,W0301,W0311,W0312,W0401,W0404,W0406,W0410,W0601,W0602,W0603,W0604,W0611,W0612,W0613,W0614,W0621,W0622,W0623,W0631,W0640,W0702,W0705,W0711,W1201,W1202,W1300,W1301,W1302,W1303,W1304,W1305,W1306,W1307,W1401,W1402,W1501,W1503,W1645"
+
+if [ "$AVOCADO_PARALLEL_LINT" ]; then
+    LINT_CMD="$LINT_CMD --parallel=$AVOCADO_PARALLEL_LINT"
 fi
+
+run_rc lint "$LINT_CMD $PYLINT_ENABLE"
+
 # Skip checking test_utils_cpu.py due to inspektor bug
 run_rc indent 'inspekt indent --exclude=.git,selftests/unit/test_utils_cpu.py'
 run_rc style 'inspekt style --exclude=.git --disable E501,E265,W601,E402,E722'
@@ -168,7 +168,7 @@ run_rc signed-off-by signed_off_check
 if [ "$AVOCADO_PARALLEL_CHECK" ]; then
     run_rc selftests parallel_selftests
 elif [ -z "$AVOCADO_SELF_CHECK" ]; then
-    run_rc selftests selftests/run
+    run_rc selftests "$PYTHON selftests/run"
 else
     CMD='scripts/avocado run --job-results-dir=$(mktemp -d) selftests/{unit,functional,doc}'
     [ ! $SELF_CHECK_CONTINUOUS ] && CMD+=" --failfast on"

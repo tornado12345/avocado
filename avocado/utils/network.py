@@ -23,39 +23,60 @@ from six.moves import xrange as range
 
 from .data_structures import Borg
 
+#: Families taken into account in this class
+FAMILIES = (socket.AF_INET, socket.AF_INET6)
+#: Protocols taken into account in this class
+PROTOCOLS = (socket.SOCK_STREAM, socket.SOCK_DGRAM)
+
 
 def is_port_free(port, address):
     """
     Return True if the given port is available for use.
 
+    Currently we only check for TCP/UDP connections on IPv4/6
+
     :param port: Port number
     :param address: Socket address to bind or connect
     """
+    if address == "localhost" or not address:
+        localhost = True
+        protocols = PROTOCOLS
+    else:
+        localhost = False
+        # sock.connect always connects for UDP
+        protocols = (socket.SOCK_STREAM, )
+    sock = None
     try:
-        s = socket.socket()
-        if address == "localhost":
-            s.bind((address, port))
-            free = True
-        else:
-            s.connect((address, port))
-            free = False
-    except socket.error:
-        if address == "localhost":
-            free = False
-        else:
-            free = True
-    s.close()
-    return free
+        for family in FAMILIES:
+            for protocol in protocols:
+                try:
+                    sock = socket.socket(family, protocol)
+                    if localhost:
+                        sock.bind(("", port))
+                    else:
+                        sock.connect((address, port))
+                        return False
+                except socket.error as exc:
+                    if exc.errno in (93, 94):   # Unsupported combinations
+                        continue
+                    if localhost:
+                        return False
+                sock.close()
+        return True
+    finally:
+        if sock is not None:
+            sock.close()
 
 
-def find_free_port(start_port, end_port, address="localhost", sequent=True):
+def find_free_port(start_port=1024, end_port=65535, address="localhost", sequent=True):
     """
     Return a host free port in the range [start_port, end_port].
 
-    :param start_port: header of candidate port range
-    :param end_port: ender of candidate port range
+    :param start_port: header of candidate port range, defaults to 1024
+    :param end_port: ender of candidate port range, defaults to 65535
     :param sequent: Find port sequentially, random order if it's False
     :param address: Socket address to bind or connect
+    :rtype: int or None if no free port found
     """
     port_range = range(start_port, end_port)
     if not sequent:

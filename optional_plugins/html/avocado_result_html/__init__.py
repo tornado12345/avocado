@@ -23,12 +23,12 @@ import subprocess
 import sys
 import time
 
-import pkg_resources
-import pystache
+import jinja2 as jinja
 
 from avocado.core import exit_codes
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLI, Result
+from avocado.utils import astring
 
 
 class ReportModel(object):
@@ -42,25 +42,6 @@ class ReportModel(object):
         self.html_output = html_output
         self.html_output_dir = os.path.abspath(os.path.dirname(html_output))
 
-    def update(self, **kwargs):
-        """
-        Hook for updates not supported
-        """
-        pass
-
-    def get(self, key, default):
-        value = getattr(self, key, default)
-        if callable(value):
-            return value()
-        else:
-            return value
-
-    def job_unique_id(self):
-        return self.result.job_unique_id
-
-    def tests_total_time(self):
-        return "%.2f" % self.result.tests_total_time
-
     def results_dir(self, relative_links=True):
         results_dir = os.path.abspath(os.path.dirname(
             self.result.logfile))
@@ -72,37 +53,17 @@ class ReportModel(object):
     def results_dir_basename(self):
         return os.path.basename(self.results_dir(False))
 
-    def tests_total(self):
-        return self.result.tests_total
-
-    def passed(self):
-        return self.result.passed
-
-    def warned(self):
-        return self.result.warned
-
-    def rate(self):
-        total = float(self.result.tests_total - self.result.skipped -
-                      self.result.cancelled)
-        succeeded = float(self.result.passed + self.result.warned)
-        if total > 0:
-            pr = 100 * (succeeded / total)
-        else:
-            pr = 0
-        return "%.2f" % pr
-
     def _get_sysinfo(self, sysinfo_file):
         sysinfo_path = os.path.join(self.results_dir(False),
                                     'sysinfo', 'pre', sysinfo_file)
         try:
             with open(sysinfo_path, 'r') as sysinfo_file:
                 sysinfo_contents = sysinfo_file.read()
-        except OSError as details:
+        except (OSError, IOError) as details:
             sysinfo_contents = "Error reading %s: %s" % (sysinfo_path, details)
-        except IOError as details:
-            sysinfo_contents = os.uname()[1]
         return sysinfo_contents
 
+    @property
     def hostname(self):
         return self._get_sysinfo('hostname').strip()
 
@@ -156,7 +117,7 @@ class ReportModel(object):
             fail_reason = tst.get('fail_reason')
             if fail_reason is None:
                 fail_reason = '<unknown>'
-            fail_reason = str(fail_reason)
+            fail_reason = astring.to_text(fail_reason)
             if len(fail_reason) > exhibition_limit:
                 fail_reason = ('<a data-container="body" '
                                'data-toggle="popover" '
@@ -202,12 +163,15 @@ class ReportModel(object):
             s_id += 1
         return sysinfo_list
 
+    @property
     def sysinfo_pre(self):
         return self._sysinfo_phase('pre')
 
+    @property
     def sysinfo_profile(self):
         return self._sysinfo_phase('profile')
 
+    @property
     def sysinfo_post(self):
         return self._sysinfo_phase('post')
 
@@ -236,31 +200,12 @@ class HTMLResult(Result):
                          preexec_fn=setsid)
 
     def _render(self, result, output_path):
-        context = ReportModel(result=result, html_output=output_path)
-        template = pkg_resources.resource_string(
-            'avocado_result_html',
-            'resources/templates/report.mustache')
-
-        # pylint: disable=E0611
-        try:
-            if hasattr(pystache, 'Renderer'):
-                renderer = pystache.Renderer('utf-8', 'utf-8')
-                report_contents = renderer.render(template, context)
-            else:
-                from pystache import view
-                v = view.View(template, context)
-                report_contents = v.render('utf8')
-        except UnicodeDecodeError as details:
-            # FIXME: Remove me when UnicodeDecodeError problem is fixed
-            LOG_UI.critical("\n" + ("-" * 80))
-            LOG_UI.critical("HTML failed to render the template: %s\n\n",
-                            template)
-            LOG_UI.critical("-" * 80)
-            LOG_UI.critical("%s:\n\n", details)
-            LOG_UI.critical("%r", getattr(details, "object",
-                                          "object not found"))
-            LOG_UI.critical("-" * 80)
-            raise
+        env = jinja.Environment(
+            loader=jinja.PackageLoader('avocado_result_html'),
+            autoescape=True,
+        )
+        template = env.get_template('results.html')
+        report_contents = template.render({'data': ReportModel(result, output_path)})
 
         with codecs.open(output_path, 'w', 'utf-8') as report_file:
             report_file.write(report_contents)

@@ -1,17 +1,13 @@
 import glob
 import os
-import tempfile
 import shutil
+import tempfile
 import unittest
 
 from avocado.core import exit_codes
 from avocado.utils import process
 
-
-basedir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..')
-basedir = os.path.abspath(basedir)
-
-AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD", "./scripts/avocado")
+from .. import AVOCADO, BASEDIR
 
 
 class ReplayTests(unittest.TestCase):
@@ -30,7 +26,7 @@ class ReplayTests(unittest.TestCase):
             self.jobid = f.read().strip('\n')
 
     def run_and_check(self, cmd_line, expected_rc):
-        os.chdir(basedir)
+        os.chdir(BASEDIR)
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, expected_rc,
                          "Command %s did not return rc "
@@ -147,18 +143,6 @@ class ReplayTests(unittest.TestCase):
         msg = (b'RESULTS    : PASS 0 | ERROR 0 | FAIL 0 | SKIP 4 | WARN 0 | '
                b'INTERRUPT 0')
         self.assertIn(msg, result.stdout)
-
-    def test_run_replay_remotefail(self):
-        """
-        Runs a replay job using remote plugin (not supported).
-        """
-        cmd_line = ('%s run --replay %s --remote-hostname '
-                    'localhost --job-results-dir %s --sysinfo=off'
-                    % (AVOCADO, self.jobid, self.tmpdir))
-        expected_rc = exit_codes.AVOCADO_FAIL
-        result = self.run_and_check(cmd_line, expected_rc)
-        msg = b"Currently we don't replay jobs in remote hosts."
-        self.assertIn(msg, result.stderr)
 
     def test_run_replay_status_and_variants(self):
         """

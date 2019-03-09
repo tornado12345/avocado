@@ -21,11 +21,10 @@ Base classes for implementing the varianter interface
 
 import hashlib
 
-from six import iteritems, itervalues
-
 from . import tree
 from . import dispatcher
 from . import output
+from ..utils import astring
 
 
 def is_empty_variant(variant):
@@ -47,9 +46,9 @@ def generate_variant_id(variant):
              values.
     """
     variant = sorted(variant, key=lambda x: x.path)
-    fingerprint = "-".join(_.fingerprint() for _ in variant)
+    fingerprint = "\n".join(_.fingerprint() for _ in variant)
     return ("-".join(node.name for node in variant) + '-' +
-            hashlib.sha1(fingerprint.encode()).hexdigest()[:4])
+            hashlib.sha1(fingerprint.encode(astring.ENCODING)).hexdigest()[:4])
 
 
 def variant_to_str(variant, verbosity, out_args=None, debug=False):
@@ -80,9 +79,9 @@ def variant_to_str(variant, verbosity, out_args=None, debug=False):
     if verbosity:
         env = set()
         for node in variant["variant"]:
-            for key, value in iteritems(node.environment):
+            for key, value in node.environment.items():
                 origin = node.environment.origin[key].path
-                env.add(("%s:%s" % (origin, key), str(value)))
+                env.add(("%s:%s" % (origin, key), astring.to_text(value)))
         if not env:
             return out
         fmt = '    %%-%ds => %%s' % max([len(_[0]) for _ in env])
@@ -99,14 +98,15 @@ def dump_ivariants(ivariants):
         """
         Turns TreeNode-like object into tuple(path, env_representation)
         """
-        return (str(node.path),
-                [(str(node.environment.origin[key].path), str(key), value)
-                 for key, value in iteritems(node.environment)])
+        return (astring.to_text(node.path),
+                [(astring.to_text(node.environment.origin[key].path),
+                  astring.to_text(key), value)
+                 for key, value in node.environment.items()])
 
     variants = []
     for variant in ivariants():
         safe_variant = {}
-        safe_variant["paths"] = [str(pth)
+        safe_variant["paths"] = [astring.to_text(pth)
                                  for pth in variant.get("paths")]
         safe_variant["variant_id"] = variant.get("variant_id")
         safe_variant["variant"] = [dump_tree_node(_)
@@ -137,7 +137,7 @@ class FakeVariantDispatcher(object):
         else:
             return []
 
-    def to_str(self, summary=0, variants=0, **kwargs):
+    def to_str(self, summary=0, variants=0, **kwargs):  # pylint: disable=W0613
         if not self.variants:
             return ""
         out = []
@@ -147,9 +147,9 @@ class FakeVariantDispatcher(object):
                                                 paths))
             env = set()
             for node in variant["variant"]:
-                for key, value in iteritems(node.environment):
+                for key, value in node.environment.items():
                     origin = node.environment.origin[key].path
-                    env.add(("%s:%s" % (origin, key), str(value)))
+                    env.add(("%s:%s" % (origin, key), astring.to_text(value)))
             if not env:
                 continue
             fmt = '    %%-%ds => %%s' % max([len(_[0]) for _ in env])
@@ -194,11 +194,11 @@ class Varianter(object):
         :param args: Parsed cmdline arguments
         """
         default_params = self.node_class()
-        for default_param in itervalues(self.default_params):
+        for default_param in self.default_params.values():
             default_params.merge(default_param)
         self._default_params = default_params
         self.default_params.clear()
-        self._variant_plugins.map_method_copy("initialize", args)
+        self._variant_plugins.map_method("initialize", args)
         self._variant_plugins.map_method_copy("update_defaults", self._default_params)
         self._no_variants = sum(self._variant_plugins.map_method("__len__"))
 

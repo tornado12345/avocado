@@ -23,7 +23,7 @@ from xml.dom.minidom import Document
 from avocado.core.parser import FileOrStdoutAction
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLI, Result
-from avocado.utils import data_structures
+from avocado.utils import astring, data_structures
 
 
 class XUnitResult(Result):
@@ -36,7 +36,7 @@ class XUnitResult(Result):
 
     def _escape_attr(self, attrib):
         attrib = ''.join(_ if _ in self.PRINTABLE else "\\x%02x" % ord(_)
-                         for _ in str(attrib))
+                         for _ in astring.to_text(attrib, encoding='utf-8'))
         return attrib
 
     def _escape_cdata(self, cdata):
@@ -47,11 +47,15 @@ class XUnitResult(Result):
     def _get_attr(self, container, attrib):
         return self._escape_attr(container.get(attrib, self.UNKNOWN))
 
+    @staticmethod
+    def _format_time(time):
+        return "{:.3f}".format(float(time))
+
     def _create_testcase_element(self, document, state):
         testcase = document.createElement('testcase')
         testcase.setAttribute('classname', self._get_attr(state, 'class_name'))
         testcase.setAttribute('name', self._get_attr(state, 'name'))
-        testcase.setAttribute('time', self._get_attr(state, 'time_elapsed'))
+        testcase.setAttribute('time', self._format_time(self._get_attr(state, 'time_elapsed')))
         return testcase
 
     def _create_failure_or_error(self, document, test, element_type,
@@ -68,15 +72,15 @@ class XUnitResult(Result):
                 if max_log_size is not None:
                     logfile_obj.seek(0, 2)
                     log_size = logfile_obj.tell()
+                    logfile_obj.seek(0, 0)
                     if log_size < max_log_size:
                         text_output = logfile_obj.read()
                     else:
-                        size = max_log_size / 2
-                        logfile_obj.seek(0, 0)
+                        size = int(max_log_size / 2)
                         text_output = logfile_obj.read(size)
                         text_output += ("\n\n--[ CUT DUE TO XML PER TEST "
                                         "LIMIT ]--\n\n")
-                        logfile_obj.seek(-size / 2, 2)
+                        logfile_obj.seek(log_size - size, 0)
                         text_output += logfile_obj.read()
                 else:
                     text_output = logfile_obj.read()
@@ -87,15 +91,18 @@ class XUnitResult(Result):
         system_out.appendChild(system_out_cdata)
         return element, system_out
 
-    def _render(self, result, max_test_log_size):
+    def _render(self, result, max_test_log_size, job_name):
         document = Document()
         testsuite = document.createElement('testsuite')
-        testsuite.setAttribute('name', 'avocado')
+        if job_name:
+            testsuite.setAttribute('name', job_name)
+        else:
+            testsuite.setAttribute('name', os.path.basename(os.path.dirname(result.logfile)))
         testsuite.setAttribute('tests', self._escape_attr(result.tests_total))
         testsuite.setAttribute('errors', self._escape_attr(result.errors + result.interrupted))
         testsuite.setAttribute('failures', self._escape_attr(result.failed))
         testsuite.setAttribute('skipped', self._escape_attr(result.skipped + result.cancelled))
-        testsuite.setAttribute('time', self._escape_attr(result.tests_total_time))
+        testsuite.setAttribute('time', self._escape_attr(self._format_time(result.tests_total_time)))
         testsuite.setAttribute('timestamp', self._escape_attr(datetime.datetime.now().isoformat()))
         document.appendChild(testsuite)
         for test in result.tests:
@@ -133,7 +140,8 @@ class XUnitResult(Result):
             return
 
         max_test_log_size = getattr(job.args, 'xunit_max_test_log_chars', None)
-        content = self._render(result, max_test_log_size)
+        job_name = getattr(job.args, 'xunit_job_name', None)
+        content = self._render(result, max_test_log_size, job_name)
         if getattr(job.args, 'xunit_job_result', 'off') == 'on':
             xunit_path = os.path.join(job.logdir, 'results.xml')
             with open(xunit_path, 'wb') as xunit_file:
@@ -173,7 +181,14 @@ class XUnitCLI(CLI):
             '--xunit-job-result', dest='xunit_job_result',
             choices=('on', 'off'), default='on',
             help=('Enables default xUnit result in the job results directory. '
-                  'File will be named "results.xml".'))
+                  'File will be named "results.xml". '
+                  'Defaults to on.'))
+
+        run_subcommand_parser.output.add_argument(
+            '--xunit-job-name', default=None, help="Override the reported "
+            "job name. By default uses the Avocado job name which is always "
+            "unique. This is useful for reporting in Jenkins as it only "
+            "evaluates first-failure from jobs of the same name.")
 
         run_subcommand_parser.output.add_argument(
             '--xunit-max-test-log-chars', metavar='SIZE',

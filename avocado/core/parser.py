@@ -18,8 +18,6 @@ Avocado application command line parsing.
 
 import argparse
 
-from six import iteritems
-
 from . import exit_codes
 from . import varianter
 from . import settings
@@ -39,6 +37,9 @@ class ArgumentParser(argparse.ArgumentParser):
     def error(self, message):
         LOG_UI.debug(self.format_help())
         LOG_UI.error("%s: error: %s", self.prog, message)
+        if "unrecognized arguments" in message:
+            LOG_UI.warning("Perhaps a plugin is missing; run 'avocado"
+                           " plugins' to list the installed ones")
         self.exit(exit_codes.AVOCADO_FAIL)
 
     def _get_option_tuples(self, option_string):
@@ -81,8 +82,8 @@ class Parser(object):
         self.application.add_argument('--config', metavar='CONFIG_FILE',
                                       nargs='?',
                                       help='Use custom configuration from a file')
-        streams = (['"%s": %s' % _ for _ in iteritems(BUILTIN_STREAMS)] +
-                   ['"%s": %s' % _ for _ in iteritems(BUILTIN_STREAM_SETS)])
+        streams = (['"%s": %s' % _ for _ in BUILTIN_STREAMS.items()] +
+                   ['"%s": %s' % _ for _ in BUILTIN_STREAM_SETS.items()])
         streams = "; ".join(streams)
         self.application.add_argument('--show', action="store",
                                       type=lambda value: value.split(","),

@@ -30,7 +30,6 @@ import time
 import unittest
 
 from difflib import unified_diff
-from six import string_types, iteritems
 
 from . import data_dir
 from . import defaults
@@ -72,9 +71,6 @@ class RawFileHandler(logging.FileHandler):
     logged stream but still respects the formatter.
     """
 
-    def __init__(self, *args, **kwargs):
-        logging.FileHandler.__init__(self, *args, **kwargs)
-
     def emit(self, record):
         """
         Modifying the original emit() to avoid including a new line
@@ -86,7 +82,8 @@ class RawFileHandler(logging.FileHandler):
         try:
             msg = self.format(record)
             stream = self.stream
-            stream.write('%s' % msg)
+            stream.write(astring.to_text(msg, self.encoding,
+                                         'xmlcharrefreplace'))
             self.flush()
         except Exception:
             self.handleError(record)
@@ -132,7 +129,7 @@ class TestID(object):
         return repr(str(self))
 
     def __eq__(self, other):
-        if isinstance(other, string_types):
+        if isinstance(other, str):
             return str(self) == other
         else:
             return self.__dict__ == other.__dict__
@@ -190,15 +187,20 @@ class TestData(object):
     DATA_SOURCES = ["variant", "test", "file"]
 
     def __init__(self):
+        # Maximal allowed file name length is 255
+        file_datadir = None
+        if (self.filename is not None and
+                len(os.path.basename(self.filename)) < 251):
+            file_datadir = self.filename + '.data'
         self._data_sources_mapping = {
-            "variant": [lambda: self.datadir,
+            "variant": [lambda: file_datadir,
                         lambda: "%s.%s" % (self.__class__.__name__,
                                            self._testMethodName),
                         lambda: self.name.variant],
-            "test": [lambda: self.datadir,
+            "test": [lambda: file_datadir,
                      lambda: "%s.%s" % (self.__class__.__name__,
                                         self._testMethodName)],
-            "file": [lambda: self.datadir]
+            "file": [lambda: file_datadir]
         }
 
     def _check_valid_data_source(self, source):
@@ -273,7 +275,13 @@ class TestData(object):
         for attempt_source in sources:
             datadir = self._get_datadir(attempt_source)
             if datadir is not None:
-                path = os.path.join(datadir, filename)
+                # avoid returning a slash after the data directory name
+                # when a file was not requested (thus return the data
+                # directory itself)
+                if not filename:
+                    path = datadir
+                else:
+                    path = os.path.join(datadir, filename)
                 if not must_exist:
                     self.log.debug(log_fmt, filename, path,
                                    ("assumed to be located at %s source "
@@ -311,7 +319,7 @@ class Test(unittest.TestCase, TestData):
     timeout = None
 
     def __init__(self, methodName='test', name=None, params=None,
-                 base_logdir=None, job=None, runner_queue=None):
+                 base_logdir=None, job=None, runner_queue=None, tags=None):
         """
         Initializes the test.
 
@@ -340,6 +348,7 @@ class Test(unittest.TestCase, TestData):
             self.__name = TestID(0, self.__class__.__name__)
 
         self.__job = job
+        self.__tags = tags
 
         if base_logdir is None:
             base_logdir = data_dir.create_job_logs_dir()
@@ -402,8 +411,7 @@ class Test(unittest.TestCase, TestData):
             base_tmpdir = tempfile.mkdtemp(prefix="tmp_dir", dir=self.logdir)
         self.__workdir = os.path.join(base_tmpdir,
                                       self.name.str_filesystem)
-        self.__srcdir_warning_logged = False
-        self.__srcdir = utils_path.init_dir(self.__workdir, 'src')
+        utils_path.init_dir(self.__workdir)
 
         self.log.debug("Test metadata:")
         if self.filename:
@@ -434,6 +442,13 @@ class Test(unittest.TestCase, TestData):
         The job this test is associated with
         """
         return self.__job
+
+    @property
+    def tags(self):
+        """
+        The tags associated with this test
+        """
+        return self.__tags
 
     @property
     def log(self):
@@ -477,29 +492,6 @@ class Test(unittest.TestCase, TestData):
         """
         if self.filename is not None:
             return os.path.dirname(self.filename)
-        else:
-            return None
-
-    @property
-    def datadir(self):
-        """
-        Returns the path to the directory that may contain test data files
-
-        For test a test file hosted at /usr/share/avocado/tests/sleeptest.py
-        the datadir is /usr/share/avocado/tests/sleeptest.py.data.
-
-        Note that this directory has no specific relation to the test
-        name, only to the file that contains the test.  It can be used to
-        host data files that are generic enough to be used for all tests
-        contained in a given test file.
-
-        This property is deprecated and will be removed in the future.
-        The :meth:`get_data` function should be used instead.
-        """
-        # Maximal allowed file name length is 255
-        if (self.filename is not None and
-                len(os.path.basename(self.filename)) < 251):
-            return self.filename + '.data'
         else:
             return None
 
@@ -548,31 +540,12 @@ class Test(unittest.TestCase, TestData):
         return self.__workdir
 
     @property
-    def srcdir(self):
-        """
-        This property is deprecated and will be removed in the future.
-        The :meth:`workdir` property should be used instead.
-        """
-        if not self.__srcdir_warning_logged:
-            LOG_JOB.warn("DEPRECATION NOTICE: the test's \"srcdir\" property "
-                         "is deprecated and is planned to be removed no later "
-                         "than May 11 2018. Please use the \"workdir\" "
-                         "property instead.")
-            self.__srcdir_warning_logged = True
-        return self.__srcdir
-
-    @property
     def cache_dirs(self):
         """
         Returns a list of cache directories as set in config file.
         """
         if self.__cache_dirs is None:
-            cache_dirs = settings.get_value('datadir.paths', 'cache_dirs',
-                                            key_type=list, default=[])
-            datadir_cache = os.path.join(data_dir.get_data_dir(), 'cache')
-            if datadir_cache not in cache_dirs:
-                cache_dirs.append(datadir_cache)
-            self.__cache_dirs = cache_dirs
+            self.__cache_dirs = data_dir.get_cache_dirs()
         return self.__cache_dirs
 
     @property
@@ -671,7 +644,8 @@ class Test(unittest.TestCase, TestData):
     def _register_log_file_handler(self, logger, formatter, filename,
                                    log_level=logging.DEBUG, raw=False):
         if raw:
-            file_handler = RawFileHandler(filename=filename)
+            file_handler = RawFileHandler(filename=filename,
+                                          encoding=astring.ENCODING)
         else:
             file_handler = logging.FileHandler(filename=filename)
         file_handler.setLevel(log_level)
@@ -691,6 +665,11 @@ class Test(unittest.TestCase, TestData):
 
         self.file_handler.setFormatter(formatter)
         self.log.addHandler(self.file_handler)
+
+        # add the test log handler to the root logger so that
+        # everything logged while the test is running, for every
+        # logger, also makes its way into the test log file
+        logging.root.addHandler(self.file_handler)
 
         stream_fmt = '%(message)s'
         stream_formatter = logging.Formatter(fmt=stream_fmt)
@@ -730,7 +709,7 @@ class Test(unittest.TestCase, TestData):
             sys.stderr.rm_logger(LOG_JOB.getChild("stderr"))
         if isinstance(sys.stdout, output.LoggingFile):
             sys.stdout.rm_logger(LOG_JOB.getChild("stdout"))
-        for name, handler in iteritems(self._logging_handlers):
+        for name, handler in self._logging_handlers.items():
             logging.getLogger(name).removeHandler(handler)
 
     def _record_reference(self, produced_file_path, reference_file_name):
@@ -860,7 +839,7 @@ class Test(unittest.TestCase, TestData):
             except exceptions.TestCancel as details:
                 stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
                 raise
-            except:  # Old-style exceptions are not inherited from Exception()
+            except:  # Old-style exceptions are not inherited from Exception() pylint: disable=W0702
                 stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
                 details = sys.exc_info()[1]
                 if not isinstance(details, Exception):  # Avoid passing nasty exc
@@ -868,7 +847,7 @@ class Test(unittest.TestCase, TestData):
                 test_exception = details
                 self.log.debug("Local variables:")
                 local_vars = inspect.trace()[1][0].f_locals
-                for key, value in iteritems(local_vars):
+                for key, value in local_vars.items():
                     self.log.debug(' -> %s %s: %s', key, type(value), value)
         finally:
             try:
@@ -885,7 +864,7 @@ class Test(unittest.TestCase, TestData):
             except exceptions.TestCancel as details:
                 stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
                 raise
-            except:  # avoid old-style exception failures
+            except:  # avoid old-style exception failures pylint: disable=W0702
                 stacktrace.log_exc_info(sys.exc_info(), logger=LOG_JOB)
                 details = sys.exc_info()[1]
                 cleanup_exception = exceptions.TestSetupFail(details)
@@ -950,6 +929,9 @@ class Test(unittest.TestCase, TestData):
                                                 logger=LOG_JOB)
                         stderr_check_exception = details
 
+        if self.__sysinfo_enabled:
+            self.__sysinfo_logger.end_test_hook()
+
         # pylint: disable=E0702
         if test_exception is not None:
             raise test_exception
@@ -967,22 +949,17 @@ class Test(unittest.TestCase, TestData):
                                       "details.")
 
         self.__status = 'PASS'
-        if self.__sysinfo_enabled:
-            self.__sysinfo_logger.end_test_hook()
 
     def _setup_environment_variables(self):
         os.environ['AVOCADO_VERSION'] = VERSION
         if self.basedir is not None:
             os.environ['AVOCADO_TEST_BASEDIR'] = self.basedir
-        if self.datadir is not None:
-            os.environ['AVOCADO_TEST_DATADIR'] = self.datadir
         os.environ['AVOCADO_TEST_WORKDIR'] = self.workdir
         os.environ['AVOCADO_TEST_LOGDIR'] = self.logdir
         os.environ['AVOCADO_TEST_LOGFILE'] = self.logfile
         os.environ['AVOCADO_TEST_OUTPUTDIR'] = self.outputdir
         if self.__sysinfo_enabled:
             os.environ['AVOCADO_TEST_SYSINFODIR'] = self.__sysinfodir
-        os.environ['AVOCADO_TEST_SRCDIR'] = self.__srcdir
 
     def run_avocado(self):
         """
@@ -997,20 +974,20 @@ class Test(unittest.TestCase, TestData):
         except exceptions.TestBaseException as detail:
             self.__status = detail.status
             self.__fail_class = detail.__class__.__name__
-            self.__fail_reason = str(detail)
+            self.__fail_reason = astring.to_text(detail)
             self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
         except AssertionError as detail:
             self.__status = 'FAIL'
             self.__fail_class = detail.__class__.__name__
-            self.__fail_reason = str(detail)
+            self.__fail_reason = astring.to_text(detail)
             self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
         except Exception as detail:
             self.__status = 'ERROR'
             tb_info = stacktrace.tb_info(sys.exc_info())
             self.__traceback = stacktrace.prepare_exc_info(sys.exc_info())
             try:
-                self.__fail_class = str(detail.__class__.__name__)
-                self.__fail_reason = str(detail)
+                self.__fail_class = astring.to_text(detail.__class__.__name__)
+                self.__fail_reason = astring.to_text(detail)
             except TypeError:
                 self.__fail_class = "Exception"
                 self.__fail_reason = ("Unable to get exception, check the "
@@ -1078,7 +1055,7 @@ class Test(unittest.TestCase, TestData):
         """
         raise exceptions.TestCancel(message)
 
-    def fetch_asset(self, name, asset_hash=None, algorithm='sha1',
+    def fetch_asset(self, name, asset_hash=None, algorithm=None,
                     locations=None, expire=None):
         """
         Method o call the utils.asset in order to fetch and asset file
@@ -1086,7 +1063,8 @@ class Test(unittest.TestCase, TestData):
 
         :param name: the asset filename or URL
         :param asset_hash: asset hash (optional)
-        :param algorithm: hash algorithm (optional, defaults to sha1)
+        :param algorithm: hash algorithm (optional, defaults to
+                          :data:`avocado.utils.asset.DEFAULT_HASH_ALGORITHM`)
         :param locations: list of URLs from where the asset can be
                           fetched (optional)
         :param expire: time for the asset to expire
@@ -1114,9 +1092,14 @@ class SimpleTest(Test):
         self._filename = executable
         super(SimpleTest, self).__init__(name=name, params=params,
                                          base_logdir=base_logdir, job=job)
-        self._data_sources_mapping = {"variant": [lambda: self.datadir,
+        # Maximal allowed file name length is 255
+        file_datadir = None
+        if (self.filename is not None and
+                len(os.path.basename(self.filename)) < 251):
+            file_datadir = self.filename + '.data'
+        self._data_sources_mapping = {"variant": [lambda: file_datadir,
                                                   lambda: self.name.variant],
-                                      "file": [lambda: self.datadir]}
+                                      "file": [lambda: file_datadir]}
         self._command = None
         if self.filename is not None:
             self._command = pipes.quote(self.filename)

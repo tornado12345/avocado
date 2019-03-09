@@ -73,7 +73,7 @@ class MuxTree(object):
             try:
                 node = queue.popleft()
             except IndexError:
-                raise StopIteration
+                return
 
     def __iter__(self):
         """
@@ -101,7 +101,10 @@ class MuxTree(object):
                 pools.append([pool])
         variants = itertools.product(*pools)
         while True:
-            yield list(itertools.chain(*next(variants)))
+            try:
+                yield list(itertools.chain(*next(variants)))
+            except StopIteration:
+                return
 
     @staticmethod
     def _valid_variant(variant):
@@ -211,7 +214,8 @@ class MuxPlugin(object):
             # summary == 0 means disable, but in plugin it's brief
             tree_repr = tree.tree_view(self.root, verbose=summary - 1,
                                        use_utf8=kwargs.get("use_utf8", None))
-            out.append(tree_repr)
+            # ascii is a subset of UTF-8, let's use always UTF-8 to decode here
+            out.append(tree_repr.decode('utf-8'))
             out.append("")
 
         if variants:
@@ -309,7 +313,10 @@ class ValueDict(dict):  # only container pylint: disable=R0903
         """ Slower implementation with the use of __getitem__ """
         for key in iterkeys(self):
             yield key, self[key]
-        raise StopIteration
+
+    def items(self):
+        """ Slower implementation with the use of __getitem__ """
+        return self.iteritems()
 
 
 class Control(object):  # Few methods pylint: disable=R0903

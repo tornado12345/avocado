@@ -2,12 +2,7 @@ import argparse
 import os
 import shutil
 import tempfile
-import unittest
-
-try:
-    from unittest import mock
-except ImportError:
-    import mock
+import unittest.mock
 
 from avocado.core import data_dir
 from avocado.core import exceptions
@@ -15,6 +10,11 @@ from avocado.core import exit_codes
 from avocado.core import job
 from avocado.core import test
 from avocado.utils import path as utils_path
+
+from .. import setup_avocado_loggers
+
+
+setup_avocado_loggers()
 
 
 class JobTest(unittest.TestCase):
@@ -48,7 +48,7 @@ class JobTest(unittest.TestCase):
         self.assertIsNone(self.job.test_runner)
         self.assertIsNone(self.job.test_suite)
         self.assertIsNone(self.job.tmpdir)
-        self.assertFalse(self.job._Job__remove_tmpdir)
+        self.assertTrue(self.job._Job__keep_tmpdir)
         self.assertEqual(self.job.args, args)
         self.assertEqual(self.job.exitcode, exit_codes.AVOCADO_ALL_OK)
         self.assertEqual(self.job.references, [])
@@ -61,7 +61,7 @@ class JobTest(unittest.TestCase):
         self.assertIsNotNone(self.job.logfile)
         self.assertIsNotNone(self.job.result)
         self.assertIsNotNone(self.job.tmpdir)
-        self.assertTrue(self.job._Job__remove_tmpdir)
+        self.assertFalse(self.job._Job__keep_tmpdir)
         self.assertEqual(uid, self.job.unique_id)
         self.assertEqual(self.job.status, "RUNNING")
 
@@ -221,8 +221,8 @@ class JobTest(unittest.TestCase):
 
     def test_job_no_base_logdir(self):
         args = argparse.Namespace()
-        with mock.patch('avocado.core.job.data_dir.get_logs_dir',
-                        return_value=self.tmpdir):
+        with unittest.mock.patch('avocado.core.job.data_dir.get_logs_dir',
+                                 return_value=self.tmpdir):
             self.job = job.Job(args)
             self.job.setup()
         self.assertTrue(os.path.isdir(self.job.logdir))
@@ -232,12 +232,10 @@ class JobTest(unittest.TestCase):
     def test_job_dryrun_no_base_logdir(self):
         args = argparse.Namespace(dry_run=True)
         self.job = job.Job(args)
-        self.job.setup()
-        try:
+        with self.job:
             self.assertTrue(os.path.isdir(self.job.logdir))
             self.assertTrue(os.path.isfile(os.path.join(self.job.logdir, 'id')))
-        finally:
-            shutil.rmtree(self.job.args.base_logdir)
+        self.assertFalse(os.path.isdir(self.job.logdir))
 
     def tearDown(self):
         data_dir._tmp_tracker.unittest_refresh_dir_tracker()

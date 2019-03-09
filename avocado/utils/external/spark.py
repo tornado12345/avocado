@@ -62,7 +62,7 @@ class GenericScanner:
         rv.append(self.makeRE('t_default'))
         return '|'.join(rv)
 
-    def error(self, s, pos):
+    def error(self, s, pos):  # pylint: disable=W0613
         print("Lexical error at position %s" % pos)
         raise SystemExit
 
@@ -88,7 +88,7 @@ class GenericScanner:
                    self.index2func.has_key(i):
                     self.index2func[i](groups[i])
 
-    def t_default(self, s):
+    def t_default(self, s):  # pylint: disable=W0613
         r'( . | \n )+'
         print("Specification error: unmatched input")
         raise SystemExit
@@ -297,17 +297,17 @@ class GenericParser:
                                  candidate, oldrule))
                 candidate = 0
                 i += 1
-            else:
-                if candidate:
-                    lhs = self._NULLABLE + lhs
-                    rule = (lhs, rhs)
-                if lhs in self.newrules:
-                    self.newrules[lhs].append(rule)
-                else:
-                    self.newrules[lhs] = [rule]
-                self.new2old[rule] = oldrule
 
-    def typestring(self, token):
+            if candidate:
+                lhs = self._NULLABLE + lhs
+                rule = (lhs, rhs)
+            if lhs in self.newrules:
+                self.newrules[lhs].append(rule)
+            else:
+                self.newrules[lhs] = [rule]
+            self.new2old[rule] = oldrule
+
+    def typestring(self, token):  # pylint: disable=W0613
         return None
 
     def error(self, token):
@@ -343,7 +343,7 @@ class GenericParser:
         finalitem = (self.finalState(tokens), 0)
         if finalitem not in sets[-2]:
             if len(tokens) > 0:
-                self.error(tokens[i - 1])
+                self.error(tokens[i - 1])  # pylint: disable=W0631
             else:
                 self.error(None)
 
@@ -677,7 +677,7 @@ class GenericParser:
             sortlist.append((len(rhs), name))
             name2index[name] = i
         sortlist.sort()
-        result_list = map(lambda a, b: b, sortlist)
+        result_list = [name for _, name in sortlist]
         return rules[name2index[self.resolve(result_list)]]
 
     def resolve(self, input_list):

@@ -139,13 +139,14 @@ class PathInspector(object):
         return self.is_script(language='python')
 
 
-def usable_rw_dir(directory):
+def usable_rw_dir(directory, create=True):
     """
     Verify whether we can use this dir (read/write).
 
     Checks for appropriate permissions, and creates missing dirs as needed.
 
     :param directory: Directory
+    :param create: whether to create the directory
     """
     if os.path.isdir(directory):
         try:
@@ -155,7 +156,7 @@ def usable_rw_dir(directory):
             return True
         except OSError:
             pass
-    else:
+    elif create:
         try:
             init_dir(directory)
             return True
@@ -165,7 +166,7 @@ def usable_rw_dir(directory):
     return False
 
 
-def usable_ro_dir(directory):
+def usable_ro_dir(directory, create=True):
     """
     Verify whether dir exists and we can access its contents.
 
@@ -173,6 +174,7 @@ def usable_ro_dir(directory):
     least try to create one.
 
     :param directory: Directory
+    :param create: whether to create the directory
     """
     cwd = os.getcwd()
     if os.path.isdir(directory):
@@ -182,7 +184,7 @@ def usable_ro_dir(directory):
             return True
         except OSError:
             pass
-    else:
+    elif create:
         try:
             init_dir(directory)
             return True
@@ -190,3 +192,22 @@ def usable_ro_dir(directory):
             pass
 
     return False
+
+
+def check_readable(path):
+    """
+    Verify that the given path exists and is readable
+
+    This should be used where an assertion makes sense, and is useful
+    because it can provide a better message in the exception it
+    raises.
+
+    :param path: the path to test
+    :type path: str
+    :raise OSError: path does not exist or path could not be read
+    :rtype: None
+    """
+    if not os.path.exists(path):
+        raise OSError('File "%s" does not exist' % path)
+    if not os.access(path, os.R_OK):
+        raise OSError('File "%s" can not be read' % path)

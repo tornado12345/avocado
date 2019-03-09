@@ -18,9 +18,6 @@ Module related to test parameters
 import logging
 import re
 
-from six import iterkeys, iteritems
-from six.moves import xrange as range
-
 
 class NoMatchError(KeyError):
     pass
@@ -62,9 +59,9 @@ class AvocadoParams(object):
         self._logger_name = logger_name
 
     def __eq__(self, other):
-        if set(iterkeys(self.__dict__)) != set(iterkeys(other.__dict__)):
+        if set(self.__dict__) != set(other.__dict__):
             return False
-        for attr in iterkeys(self.__dict__):
+        for attr in self.__dict__:
             if (getattr(self, attr) != getattr(other, attr)):
                 return False
         return True
@@ -250,7 +247,8 @@ class AvocadoParam(object):
         if not ret:
             raise NoMatchError("No matches to %s => %s in %s"
                                % (path.pattern, key, self.str_leaves_variant))
-        if len(set([_[1] for _ in ret])) == 1:  # single source of results
+        # make sure all params come from the same origin
+        if len(set([_[1].path for _ in ret])) == 1:
             return ret[0][0]
         else:
             raise ValueError("Multiple %s leaves contain the key '%s'; %s"
@@ -264,5 +262,5 @@ class AvocadoParam(object):
         which generates lots of duplicate entries due to inherited values.
         """
         for leaf in self._leaves:
-            for key, value in iteritems(leaf.environment):
+            for key, value in leaf.environment.items():
                 yield (leaf.environment.origin[key].path, key, value)

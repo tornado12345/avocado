@@ -112,7 +112,7 @@ class Command(Collectible):
 
     :param cmd: String with the command.
     :param logf: Basename of the file where output is logged (optional).
-    :param compress_logf: Whether to compress the output of the command.
+    :param compress_log: Whether to compress the output of the command.
     """
 
     def __init__(self, cmd, logf=None, compress_log=False):
@@ -184,8 +184,12 @@ class Daemon(Command):
 
     :param cmd: String with the daemon command.
     :param logf: Basename of the file where output is logged (optional).
-    :param compress_logf: Whether to compress the output of the command.
+    :param compress_log: Whether to compress the output of the command.
     """
+
+    def __init__(self, *args, **kwargs):
+        super(Daemon, self).__init__(*args, **kwargs)
+        self.daemon_process = None
 
     def run(self, logdir):
         """
@@ -202,21 +206,29 @@ class Daemon(Command):
         logf_path = os.path.join(logdir, self.logf)
         stdin = open(os.devnull, "r")
         stdout = open(logf_path, "w")
-        self.pipe = subprocess.Popen(shlex.split(self.cmd), stdin=stdin, stdout=stdout,
-                                     stderr=subprocess.STDOUT, shell=False, env=env)
+
+        try:
+            self.daemon_process = subprocess.Popen(shlex.split(self.cmd),
+                                                   stdin=stdin, stdout=stdout,
+                                                   stderr=subprocess.STDOUT,
+                                                   shell=False, env=env)
+        except OSError:
+            log.debug("Not logging  %s (command could not be run)", self.cmd)
 
     def stop(self):
         """
         Stop daemon execution.
         """
-        retcode = self.pipe.poll()
-        if retcode is None:
-            process.kill_process_tree(self.pipe.pid)
-            retcode = self.pipe.wait()
-        else:
-            log.error("Daemon process '%s' (pid %d) terminated abnormally (code %d)",
-                      self.cmd, self.pipe.pid, retcode)
-        return retcode
+        if self.daemon_process is not None:
+            retcode = self.daemon_process.poll()
+            if retcode is None:
+                process.kill_process_tree(self.daemon_process.pid)
+                retcode = self.daemon_process.wait()
+            else:
+                log.error("Daemon process '%s' (pid %d) "
+                          "terminated abnormally (code %d)",
+                          self.cmd, self.daemon_process.pid, retcode)
+            return retcode
 
 
 class JournalctlWatcher(Collectible):
@@ -238,10 +250,10 @@ class JournalctlWatcher(Collectible):
         try:
             cmd = 'journalctl --quiet --lines 1 --output json'
             result = process.system_output(cmd, verbose=False)
-            last_record = json.loads(result)
+            last_record = json.loads(astring.to_text(result, "utf-8"))
             return last_record['__CURSOR']
-        except Exception as e:
-            log.debug("Journalctl collection failed: %s", e)
+        except Exception as detail:
+            log.debug("Journalctl collection failed: %s", detail)
 
     def run(self, logdir):
         if self.cursor:
@@ -249,13 +261,13 @@ class JournalctlWatcher(Collectible):
                 cmd = 'journalctl --quiet --after-cursor %s' % self.cursor
                 log_diff = process.system_output(cmd, verbose=False)
                 dstpath = os.path.join(logdir, self.logf)
-                with gzip.GzipFile(dstpath, "w") as out_journalctl:
+                with gzip.GzipFile(dstpath, "wb") as out_journalctl:
                     out_journalctl.write(log_diff)
             except IOError:
                 log.debug("Not logging journalctl (lack of permissions): %s",
                           dstpath)
-            except Exception as e:
-                log.debug("Journalctl collection failed: %s", e)
+            except Exception as detail:
+                log.debug("Journalctl collection failed: %s", detail)
 
 
 class LogWatcher(Collectible):
@@ -331,17 +343,18 @@ class LogWatcher(Collectible):
                 with gzip.GzipFile(dstpath, "wb") as out_messages:
                     in_messages.seek(bytes_to_skip)
                     while True:
-                        # Read data in manageable chunks rather than all at once.
+                        # Read data in manageable chunks rather than
+                        # all at once.
                         in_data = in_messages.read(200000)
                         if not in_data:
                             break
                         out_messages.write(in_data)
-        except ValueError as e:
-            log.info(e)
+        except ValueError as detail:
+            log.info(detail)
         except (IOError, OSError):
             log.debug("Not logging %s (lack of permissions)", self.path)
-        except Exception as e:
-            log.error("Log file %s collection failed: %s", self.path, e)
+        except Exception as detail:
+            log.error("Log file %s collection failed: %s", self.path, detail)
 
 
 class SysInfo(object):
@@ -423,7 +436,8 @@ class SysInfo(object):
 
             if self.profiler is False:
                 if not self.profilers:
-                    log.info('Profiler disabled: no profiler commands configured')
+                    log.info('Profiler disabled: no profiler'
+                             ' commands configured')
                 else:
                     log.info('Profiler disabled')
         else:
@@ -523,8 +537,8 @@ class SysInfo(object):
         Add a system file watcher collectible.
 
         :param filename: Path to the file to be logged.
-        :param hook: In which hook this watcher should be logged (start job, end
-                     job).
+        :param hook: In which hook this watcher should be logged
+                    (start job, end job).
         """
         collectibles = self._get_collectibles(hook)
         collectibles.add(LogWatcher(filename))
@@ -557,11 +571,11 @@ class SysInfo(object):
         """
         Logging hook called whenever a job starts.
         """
-        for log in self.start_job_collectibles:
-            if isinstance(log, Daemon):  # log daemons in profile directory
-                log.run(self.profile_dir)
+        for log_hook in self.start_job_collectibles:
+            if isinstance(log_hook, Daemon):  # log daemons in profile directory
+                log_hook.run(self.profile_dir)
             else:
-                log.run(self.pre_dir)
+                log_hook.run(self.pre_dir)
 
         if self.log_packages:
             self._log_installed_packages(self.pre_dir)
@@ -570,12 +584,12 @@ class SysInfo(object):
         """
         Logging hook called whenever a job finishes.
         """
-        for log in self.end_job_collectibles:
-            log.run(self.post_dir)
+        for log_hook in self.end_job_collectibles:
+            log_hook.run(self.post_dir)
         # Stop daemon(s) started previously
-        for log in self.start_job_collectibles:
-            if isinstance(log, Daemon):
-                log.stop()
+        for log_hook in self.start_job_collectibles:
+            if isinstance(log_hook, Daemon):
+                log_hook.stop()
 
         if self.log_packages:
             self._log_modified_packages(self.post_dir)
@@ -584,11 +598,11 @@ class SysInfo(object):
         """
         Logging hook called before a test starts.
         """
-        for log in self.start_test_collectibles:
-            if isinstance(log, Daemon):  # log daemons in profile directory
-                log.run(self.profile_dir)
+        for log_hook in self.start_test_collectibles:
+            if isinstance(log_hook, Daemon):  # log daemons in profile directory
+                log_hook.run(self.profile_dir)
             else:
-                log.run(self.pre_dir)
+                log_hook.run(self.pre_dir)
 
         if self.log_packages:
             self._log_installed_packages(self.pre_dir)
@@ -597,12 +611,12 @@ class SysInfo(object):
         """
         Logging hook called after a test finishes.
         """
-        for log in self.end_test_collectibles:
-            log.run(self.post_dir)
+        for log_hook in self.end_test_collectibles:
+            log_hook.run(self.post_dir)
         # Stop daemon(s) started previously
-        for log in self.start_test_collectibles:
-            if isinstance(log, Daemon):
-                log.stop()
+        for log_hook in self.start_test_collectibles:
+            if isinstance(log_hook, Daemon):
+                log_hook.stop()
 
         if self.log_packages:
             self._log_modified_packages(self.post_dir)

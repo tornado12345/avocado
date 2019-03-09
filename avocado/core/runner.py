@@ -17,7 +17,6 @@
 Test runner module.
 """
 
-import multiprocessing
 import multiprocessing.queues
 import os
 import signal
@@ -25,6 +24,7 @@ import sys
 import time
 
 from . import test
+from . import tree
 from . import exceptions
 from . import output
 from . import status
@@ -40,7 +40,7 @@ from .output import LOG_UI as APP_LOG
 from .output import LOG_JOB as TEST_LOG
 
 #: when test was interrupted (ctrl+c/timeout)
-TIMEOUT_TEST_INTERRUPTED = 1
+TIMEOUT_TEST_INTERRUPTED = 60
 #: when the process died but the status was not yet delivered
 TIMEOUT_PROCESS_DIED = 10
 #: when test reported status but the process did not finish
@@ -248,7 +248,7 @@ class TestStatus(object):
                 test_state['text_output'] = log_file_obj.read()
         except IOError:
             test_state["text_output"] = "Not available, file not created yet"
-        TEST_LOG.error('ERROR %s -> TestAbortedError: %s.', err,
+        TEST_LOG.error('ERROR %s -> TestAbortError: %s.', err,
                        test_state['name'])
         if proc.is_alive():
             TEST_LOG.warning("Killing hanged test process %s" % proc.pid)
@@ -378,13 +378,14 @@ class TestRunner(object):
                 return
             with sigtstp:
                 msg = "ctrl+z pressed, %%s test (%s)" % proc.pid
+                app_log_msg = '\n%s' % msg
                 if self.sigstopped:
-                    APP_LOG.info("\n" + msg, "resumming")
+                    APP_LOG.info(app_log_msg, "resumming")
                     TEST_LOG.info(msg, "resumming")
                     process.kill_process_tree(proc.pid, signal.SIGCONT, False)
                     self.sigstopped = False
                 else:
-                    APP_LOG.info("\n" + msg, "stopping")
+                    APP_LOG.info(app_log_msg, "stopping")
                     TEST_LOG.info(msg, "stopping")
                     process.kill_process_tree(proc.pid, signal.SIGSTOP, False)
                     self.sigstopped = True
@@ -467,7 +468,7 @@ class TestRunner(object):
 
         # Get/update the test status (decrease timeout on abort)
         if abort_reason:
-            finish_deadline = TIMEOUT_TEST_INTERRUPTED
+            finish_deadline = TIMEOUT_TEST_INTERRUPTED + time.time()
         else:
             finish_deadline = deadline
         test_state = test_status.finish(proc, time_started, step,
@@ -504,8 +505,7 @@ class TestRunner(object):
             return False
         return True
 
-    @staticmethod
-    def _template_to_factory(template, variant):
+    def _template_to_factory(self, template, variant):
         """
         Applies test params from variant to the test template
 
@@ -519,24 +519,29 @@ class TestRunner(object):
         """
         var = variant.get("variant")
         paths = variant.get("paths")
-        klass, klass_parameters = template
-        if "params" in klass_parameters:
-            if not varianter.is_empty_variant(var):
-                msg = ("Specifying test params from test loader and "
-                       "from varianter at the same time is not yet "
-                       "supported. Please remove either variants defined"
-                       "by the varianter (%s) or make the test loader of"
-                       "test %s to not to fill variants."
-                       % (variant, template))
-                raise NotImplementedError(msg)
-            variant_id = varianter.generate_variant_id(var)
-            return template, {"variant": var,
-                              "variant_id": variant_id,
-                              "paths": paths}
-        else:
-            factory = [klass, klass_parameters.copy()]
+        empty_variants = varianter.is_empty_variant(var)
+
+        if "params" not in template[1]:
+            factory = [template[0], template[1].copy()]
+            if self.job.test_parameters and empty_variants:
+                var[0] = tree.TreeNode().get_node("/", True)
+                var[0].value = self.job.test_parameters
+                paths = ["/"]
             factory[1]["params"] = (var, paths)
             return factory, variant
+
+        if not empty_variants:
+            raise NotImplementedError("Specifying test params from test loader "
+                                      "and from varianter at the same time is "
+                                      "not yet supported. Please remove either "
+                                      "variants defined by the varianter (%s) "
+                                      "or make the test loader of test %s to "
+                                      "not to fill variants." % (variant,
+                                                                 template))
+
+        return template, {"variant": var,
+                          "variant_id": varianter.generate_variant_id(var),
+                          "paths": paths}
 
     def _iter_suite(self, test_suite, variants, execution_order):
         """

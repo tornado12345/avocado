@@ -17,8 +17,6 @@
 Test loader module.
 """
 
-import ast
-import collections
 import imp
 import inspect
 import os
@@ -26,7 +24,7 @@ import re
 import shlex
 import sys
 
-from six import string_types, iteritems
+from enum import Enum
 
 from . import data_dir
 from . import output
@@ -36,12 +34,22 @@ from ..utils import stacktrace
 from .settings import settings
 from .output import LOG_UI
 
-#: Show default tests (for execution)
-DEFAULT = False
-#: Available tests (for listing purposes)
-AVAILABLE = None
-#: All tests (including broken ones)
-ALL = True
+
+class DiscoverMode(Enum):
+    #: Show default tests (for execution)
+    DEFAULT = object()
+    #: Available tests (for listing purposes)
+    AVAILABLE = object()
+    #: All tests (including broken ones)
+    ALL = object()
+
+
+#: Compatibility alias (to be removed) to :attr:`DiscoverMode.DEFAULT`
+DEFAULT = DiscoverMode.DEFAULT
+#: Compatibility alias (to be removed) to :attr:`DiscoverMode.AVAILABLE`
+AVAILABLE = DiscoverMode.AVAILABLE
+#: Compatibility alias (to be removed) to :attr:`DiscoverMode.ALL`
+ALL = DiscoverMode.ALL
 
 
 # Regexp to find python unittests
@@ -54,7 +62,68 @@ class MissingTest(object):
     """
 
 
-def filter_test_tags(test_suite, filter_by_tags, include_empty=False):
+def parse_filter_by_tags(filter_by_tags):
+    """
+    Parses the various filter by tags in "command line" format
+
+    The filtering of tests usually happens my means of "--filter-by-tags"
+    command line options, and many can be given.  This parses the contents
+    of those into a list of must/must_not pairs, which can be used directly
+    for comparisons when filtering.
+
+    :param filter_by_tags: params in the format given to "-t/--filter-by-tags"
+    :type filter_by_tags: list of str
+    :returns: list of tuples with (set, set)
+    """
+    result = []
+    for raw_tags in filter_by_tags:
+        required_tags = raw_tags.split(',')
+        must = set()
+        must_not = set()
+        for tag in required_tags:
+            if tag.startswith('-'):
+                must_not.add(tag[1:])
+            else:
+                must.add(tag)
+        result.append((must, must_not))
+    return result
+
+
+def must_split_flat_key_val(must):
+    """
+    Splits the flat and key:val tags apart
+
+    :returns: the flat set tags and the key:val tags
+    :rtype: tuple(set, dict)
+    """
+    key_val = {}
+    flat = set()
+    for i in must:
+        if ':' in i:
+            k, v = i.split(':', 1)
+            key_val[k] = v
+        else:
+            flat.add(i)
+    return flat, key_val
+
+
+def must_key_val_matches(must_key_vals, test_tags, include_empty_key):
+    """
+    Checks if the required key:vals are fulfilled by the test_tags
+
+    :rtype: bool
+    """
+    for k, v in must_key_vals.items():
+        if k in test_tags:
+            return v in test_tags[k]
+        else:
+            if include_empty_key:
+                return True
+    return False
+
+
+def filter_test_tags(test_suite, filter_by_tags, include_empty=False,
+                     include_empty_key=False):
     """
     Filter the existing (unfiltered) test suite based on tags
 
@@ -69,25 +138,33 @@ def filter_test_tags(test_suite, filter_by_tags, include_empty=False):
     :type filter_by_tags: list of comma separated tags (['foo,bar', 'fast'])
     :param include_empty: if true tests without tags will not be filtered out
     :type include_empty: bool
+    :param include_empty_key: if true tests "keys" on key:val tags will be
+                              included in the filtered results
+    :type include_empty_key: bool
     """
     filtered = []
+    must_must_nots = parse_filter_by_tags(filter_by_tags)
+
     for klass, info in test_suite:
-        test_tags = info.get('tags', set([]))
-        if not test_tags and include_empty:
-            filtered.append((klass, info))
+        test_tags = info.get('tags', {})
+        if not test_tags:
+            if include_empty:
+                filtered.append((klass, info))
             continue
 
-        for raw_tags in filter_by_tags:
-            required_tags = raw_tags.split(',')
-            must_not_have_tags = set([_[1:] for _ in required_tags
-                                      if _.startswith('-')])
-            if must_not_have_tags.intersection(test_tags):
+        for must, must_not in must_must_nots:
+            if must_not.intersection(test_tags):
                 continue
 
-            must_have_tags = set([_ for _ in required_tags
-                                  if not _.startswith('-')])
-            if must_have_tags:
-                if not must_have_tags.issubset(test_tags):
+            must_flat, must_key_val = must_split_flat_key_val(must)
+            if must_key_val:
+                if not must_key_val_matches(must_key_val,
+                                            test_tags,
+                                            include_empty_key):
+                    continue
+
+            if must_flat:
+                if not must_flat.issubset(test_tags):
                     continue
 
             filtered.append((klass, info))
@@ -97,17 +174,11 @@ def filter_test_tags(test_suite, filter_by_tags, include_empty=False):
 
 
 class LoaderError(Exception):
-
     """ Loader exception """
-
-    pass
 
 
 class InvalidLoaderPlugin(LoaderError):
-
     """ Invalid loader plugin """
-
-    pass
 
 
 class LoaderUnhandledReferenceError(LoaderError):
@@ -157,7 +228,7 @@ class TestLoaderProxy(object):
             # Using __func__ to avoid problem with different term_supp instances
             healthy_func = getattr(output.TERM_SUPPORT.healthy_str, '__func__')
             types = [mapping[_[0]]
-                     for _ in iteritems(plugin.get_decorator_mapping())
+                     for _ in plugin.get_decorator_mapping().items()
                      if _[1].__func__ is healthy_func]
             return [name + '.' + _ for _ in types]
 
@@ -249,14 +320,14 @@ class TestLoaderProxy(object):
                                "LoaderProxy.get_decorator_mapping")
         return self._decorator_mapping
 
-    def discover(self, references, which_tests=DEFAULT, force=None):
+    def discover(self, references, which_tests=DiscoverMode.DEFAULT, force=None):
         """
         Discover (possible) tests from test references.
 
         :param references: a list of tests references; if [] use plugin defaults
         :type references: builtin.list
-        :param which_tests: Limit tests to be displayed (ALL, AVAILABLE or
-                            DEFAULT)
+        :param which_tests: Limit tests to be displayed
+        :type which_tests: :class:`DiscoverMode`
         :param force: don't raise an exception when some test references
                       are not resolved to tests.
         :return: A list of test factories (tuples (TestClass, test_params))
@@ -285,14 +356,14 @@ class TestLoaderProxy(object):
                         if _test:
                             tests.extend(_test)
                             handled = True
-                            if not which_tests:
+                            if which_tests != DiscoverMode.ALL:
                                 break  # Don't process other plugins
                     except Exception as details:
                         handle_exception(loader_plugin, details)
                 if not handled:
                     unhandled_references.append(reference)
         if unhandled_references:
-            if which_tests:
+            if which_tests == DiscoverMode.ALL:
                 tests.extend([(MissingTest, {'name': reference})
                               for reference in unhandled_references])
             else:
@@ -314,15 +385,11 @@ class TestLoaderProxy(object):
         :return: an instance of :class:`avocado.core.test.Test`.
         """
         test_class, test_parameters = test_factory
-        # discard tags, as they are *not* intended to be parameters
-        # for the test, but used previously during filtering
-        if 'tags' in test_parameters:
-            del(test_parameters['tags'])
         if 'modulePath' in test_parameters:
             test_path = test_parameters.pop('modulePath')
         else:
             test_path = None
-        if isinstance(test_class, string_types):
+        if isinstance(test_class, str):
             module_name = os.path.basename(test_path).split('.')[0]
             test_module_dir = os.path.abspath(os.path.dirname(test_path))
             # Tests with local dir imports need this
@@ -330,7 +397,7 @@ class TestLoaderProxy(object):
                 sys.path.insert(0, test_module_dir)
                 f, p, d = imp.find_module(module_name, [test_module_dir])
                 test_module = imp.load_module(module_name, f, p, d)
-            except:
+            except:  # pylint: disable=W0702
                 # On load_module exception we fake the test class and pass
                 # the exc_info as parameter to be logged.
                 test_parameters['methodName'] = 'test'
@@ -422,31 +489,25 @@ class TestLoader(object):
         """
         return self.get_decorator_mapping()
 
-    def discover(self, reference, which_tests=DEFAULT):
+    def discover(self, reference, which_tests=DiscoverMode.DEFAULT):
         """
         Discover (possible) tests from an reference.
 
         :param reference: the reference to be inspected.
         :type reference: str
-        :param which_tests: Limit tests to be displayed (ALL, AVAILABLE or
-                            DEFAULT)
+        :param which_tests: Limit tests to be displayed
+        :type which_tests: :class:`DiscoverMode`
         :return: a list of test matching the reference as params.
         """
         raise NotImplementedError
 
 
 class BrokenSymlink(object):
-
     """ Dummy object to represent reference pointing to a BrokenSymlink path """
-
-    pass
 
 
 class AccessDeniedPath(object):
-
     """ Dummy object to represent reference pointing to a inaccessible path """
-
-    pass
 
 
 def add_loader_options(parser):
@@ -529,7 +590,7 @@ class FileLoader(TestLoader):
                 test.Test: output.TERM_SUPPORT.healthy_str,
                 test.PythonUnittest: output.TERM_SUPPORT.healthy_str}
 
-    def discover(self, reference, which_tests=DEFAULT):
+    def discover(self, reference, which_tests=DiscoverMode.DEFAULT):
         """
         Discover (possible) tests from a directory.
 
@@ -541,8 +602,8 @@ class FileLoader(TestLoader):
         partial match).
 
         :param reference: the directory path to inspect.
-        :param which_tests: Limit tests to be displayed (ALL, AVAILABLE or
-                            DEFAULT)
+        :param which_tests: Limit tests to be displayed
+        :type which_tests: :class:`DiscoverMode`
         :return: list of matching tests
         """
         tests = self._discover(reference, which_tests)
@@ -552,29 +613,29 @@ class FileLoader(TestLoader):
                 # Instrumented tests are defined as string and loaded at the
                 # execution time.
                 for tst in tests:
-                    if not isinstance(tst[0], string_types):
+                    if not isinstance(tst[0], str):
                         return None
             else:
-                test_class = next(key for key, value in iteritems(mapping)
+                test_class = next(key for key, value in mapping.items()
                                   if value == self.test_type)
                 for tst in tests:
-                    if (isinstance(tst[0], string_types) or
+                    if (isinstance(tst[0], str) or
                             not issubclass(tst[0], test_class)):
                         return None
         return tests
 
-    def _discover(self, reference, which_tests=DEFAULT):
+    def _discover(self, reference, which_tests=DiscoverMode.DEFAULT):
         """
         Recursively walk in a directory and find tests params.
         The tests are returned in alphabetic order.
 
         :param reference: the directory path to inspect.
-        :param which_tests: Limit tests to be displayed (ALL, AVAILABLE or
-                            DEFAULT)
+        :param which_tests: Limit tests to be displayed
+        :type which_tests: :class:`DiscoverMode`
         :return: list of matching tests
         """
         if reference is None:
-            if which_tests is DEFAULT:
+            if which_tests == DiscoverMode.DEFAULT:
                 return []  # Return empty set when not listing details
             else:
                 reference = data_dir.get_test_dir()
@@ -590,19 +651,21 @@ class FileLoader(TestLoader):
                 subtests_filter = re.compile(_subtests_filter)
 
         if not os.path.isdir(reference):  # Single file
-            return self._make_tests(reference, which_tests, subtests_filter)
+            return self._make_tests(reference, which_tests == DiscoverMode.ALL,
+                                    subtests_filter)
 
         tests = []
 
         def add_test_from_exception(exception):
             """ If the exc.filename is valid test it's added to tests """
-            tests.extend(self._make_tests(exception.filename, which_tests))
+            tests.extend(self._make_tests(exception.filename,
+                                          which_tests == DiscoverMode.ALL))
 
-        def skip_non_test(exception):
+        def skip_non_test(exception):  # pylint: disable=W0613
             """ Always return None """
             return None
 
-        if which_tests is ALL:
+        if which_tests == DiscoverMode.ALL:
             onerror = add_test_from_exception
         else:  # DEFAULT, AVAILABLE => skip missing tests
             onerror = skip_non_test
@@ -610,218 +673,20 @@ class FileLoader(TestLoader):
         for dirpath, dirs, filenames in os.walk(reference, onerror=onerror):
             dirs.sort()
             for file_name in sorted(filenames):
-                if not file_name.startswith('.'):
-                    for suffix in ignore_suffix:
-                        if file_name.endswith(suffix):
-                            break
-                    else:
-                        pth = os.path.join(dirpath, file_name)
-                        tests.extend(self._make_tests(pth, which_tests,
-                                                      subtests_filter))
+                if file_name.startswith('.') or file_name.endswith(ignore_suffix):
+                    continue
+
+                pth = os.path.join(dirpath, file_name)
+                tests.extend(self._make_tests(pth,
+                                              which_tests == DiscoverMode.ALL,
+                                              subtests_filter))
         return tests
-
-    def _find_avocado_tests(self, path, class_name=None):
-        """
-        Attempts to find Avocado instrumented tests from Python source files
-
-        :param path: path to a Python source code file
-        :type path: str
-        :param class_name: the specific class to be found
-        :type path: str
-        :returns: tuple where first item is dict with class name and additional
-                  info such as method names and tags; the second item is
-                  set of class names which look like avocado tests but are
-                  force-disabled.
-        :rtype: tuple
-        """
-        # If only the Test class was imported from the avocado namespace
-        test_import = False
-        # The name used, in case of 'from avocado import Test as AvocadoTest'
-        test_import_name = None
-        # If the "avocado" module itself was imported
-        mod_import = False
-        # The name used, in case of 'import avocado as avocadolib'
-        mod_import_name = None
-        # The resulting test classes
-        result = collections.OrderedDict()
-        disabled = set()
-
-        if os.path.isdir(path):
-            path = os.path.join(path, "__init__.py")
-
-        with open(path) as source_file:
-            mod = ast.parse(source_file.read(), path)
-
-        for statement in mod.body:
-            # Looking for a 'from avocado import Test'
-            if (isinstance(statement, ast.ImportFrom) and
-                    statement.module == 'avocado'):
-
-                for name in statement.names:
-                    if name.name == 'Test':
-                        test_import = True
-                        if name.asname is not None:
-                            test_import_name = name.asname
-                        else:
-                            test_import_name = name.name
-                        break
-
-            # Looking for a 'import avocado'
-            elif isinstance(statement, ast.Import):
-                for name in statement.names:
-                    if name.name == 'avocado':
-                        mod_import = True
-                        if name.asname is not None:
-                            mod_import_name = name.nasname
-                        else:
-                            mod_import_name = name.name
-
-            # Looking for a 'class Anything(anything):'
-            elif isinstance(statement, ast.ClassDef):
-
-                # class_name will exist only under recursion. In that
-                # case, we will only process the class if it has the
-                # expected class_name.
-                if class_name is not None and class_name != statement.name:
-                    continue
-
-                docstring = ast.get_docstring(statement)
-                # Looking for a class that has in the docstring either
-                # ":avocado: enable" or ":avocado: disable
-                has_disable = safeloader.check_docstring_directive(docstring,
-                                                                   'disable')
-                if (has_disable and class_name is None):
-                    disabled.add(statement.name)
-                    continue
-
-                cl_tags = safeloader.get_docstring_directives_tags(docstring)
-
-                has_enable = safeloader.check_docstring_directive(docstring,
-                                                                  'enable')
-                if (has_enable and class_name is None):
-                    info = self._get_methods_info(statement.body, cl_tags)
-                    result[statement.name] = info
-                    continue
-
-                # Looking for the 'recursive' docstring or a 'class_name'
-                # (meaning we are under recursion)
-                has_recurse = safeloader.check_docstring_directive(docstring,
-                                                                   'recursive')
-                if (has_recurse or class_name is not None):
-                    info = self._get_methods_info(statement.body, cl_tags)
-                    result[statement.name] = info
-
-                    # Getting the list of parents of the current class
-                    parents = statement.bases
-
-                    # Searching the parents in the same module
-                    for parent in parents[:]:
-                        # Looking for a 'class FooTest(module.Parent)'
-                        if isinstance(parent, ast.Attribute):
-                            parent_class = parent.attr
-                        # Looking for a 'class FooTest(Parent)'
-                        else:
-                            parent_class = parent.id
-                        res, dis = self._find_avocado_tests(path, parent_class)
-                        if res:
-                            parents.remove(parent)
-                            for cls in res:
-                                info.extend(res[cls])
-                        disabled.update(dis)
-
-                    # If there are parents left to be discovered, they
-                    # might be in a different module.
-                    for parent in parents:
-                        if isinstance(parent, ast.Attribute):
-                            # Looking for a 'class FooTest(module.Parent)'
-                            parent_module = parent.value.id
-                            parent_class = parent.attr
-                        else:
-                            # Looking for a 'class FooTest(Parent)'
-                            parent_module = None
-                            parent_class = parent.id
-
-                        for node in mod.body:
-                            reference = None
-                            # Looking for 'from parent import class'
-                            if isinstance(node, ast.ImportFrom):
-                                reference = parent_class
-                            # Looking for 'import parent'
-                            elif isinstance(node, ast.Import):
-                                reference = parent_module
-
-                            if reference is None:
-                                continue
-
-                            for artifact in node.names:
-                                # Looking for a class alias
-                                # ('from parent import class as alias')
-                                if artifact.asname is not None:
-                                    parent_class = reference = artifact.name
-                                # If the parent class or the parent module
-                                # is found in the imports, discover the
-                                # parent module path and find the parent
-                                # class there
-                                if artifact.name == reference:
-                                    modules_paths = [os.path.dirname(path)]
-                                    modules_paths.extend(sys.path)
-                                    if parent_module is None:
-                                        parent_module = node.module
-                                    _, ppath, _ = imp.find_module(parent_module,
-                                                                  modules_paths)
-                                    res, dis = self._find_avocado_tests(ppath,
-                                                                        parent_class)
-                                    if res:
-                                        for cls in res:
-                                            info.extend(res[cls])
-                                    disabled.update(dis)
-
-                    continue
-
-                if test_import:
-                    base_ids = [base.id for base in statement.bases
-                                if hasattr(base, 'id')]
-                    # Looking for a 'class FooTest(Test):'
-                    if test_import_name in base_ids:
-                        info = self._get_methods_info(statement.body,
-                                                      cl_tags)
-                        result[statement.name] = info
-                        continue
-
-                # Looking for a 'class FooTest(avocado.Test):'
-                if mod_import:
-                    for base in statement.bases:
-                        module = base.value.id
-                        klass = base.attr
-                        if module == mod_import_name and klass == 'Test':
-                            info = self._get_methods_info(statement.body,
-                                                          cl_tags)
-                            result[statement.name] = info
-                            continue
-
-        return result, disabled
-
-    @staticmethod
-    def _get_methods_info(statement_body, class_tags):
-        methods_info = []
-        for st in statement_body:
-            if (isinstance(st, ast.FunctionDef) and
-                    st.name.startswith('test')):
-                docstring = ast.get_docstring(st)
-                mt_tags = safeloader.get_docstring_directives_tags(docstring)
-                mt_tags.update(class_tags)
-
-                methods = [method for method, _ in methods_info]
-                if st.name not in methods:
-                    methods_info.append((st.name, mt_tags))
-
-        return methods_info
 
     def _find_python_unittests(self, test_path, disabled, subtests_filter):
         result = []
         class_methods = safeloader.find_class_and_methods(test_path,
                                                           _RE_UNIT_TEST)
-        for klass, methods in iteritems(class_methods):
+        for klass, methods in class_methods.items():
             if klass in disabled:
                 continue
             if test_path.endswith(".py"):
@@ -836,17 +701,30 @@ class FileLoader(TestLoader):
                 result += candidates
         return result
 
+    def _make_simple_or_broken_test(self, test_path, subtests_filter, make_broken):
+        if os.access(test_path, os.X_OK):
+            # Module does not have an avocado test class inside but
+            # it's executable, let's execute it.
+            return self._make_test(test.SimpleTest, test_path,
+                                   subtests_filter=subtests_filter,
+                                   executable=test_path)
+        else:
+            # Module does not have an avocado test class inside, and
+            # it's not executable. Not a Test.
+            return make_broken(NotATest, test_path,
+                               self.__not_test_str)
+
     def _make_existing_file_tests(self, test_path, make_broken,
                                   subtests_filter, test_name=None):
         if test_name is None:
             test_name = test_path
         try:
             # Avocado tests
-            avocado_tests, disabled = self._find_avocado_tests(test_path)
+            avocado_tests, disabled = safeloader.find_avocado_tests(test_path)
             if avocado_tests:
                 test_factories = []
                 for test_class, info in avocado_tests.items():
-                    if isinstance(test_class, string_types):
+                    if isinstance(test_class, str):
                         for test_method, tags in info:
                             name = test_name + \
                                 ':%s.%s' % (test_class, test_method)
@@ -875,17 +753,9 @@ class FileLoader(TestLoader):
                                                "test_dir": py_test_dir})
                         for name in python_unittests]
             else:
-                if os.access(test_path, os.X_OK):
-                    # Module does not have an avocado test class inside but
-                    # it's executable, let's execute it.
-                    return self._make_test(test.SimpleTest, test_path,
-                                           subtests_filter=subtests_filter,
-                                           executable=test_path)
-                else:
-                    # Module does not have an avocado test class inside, and
-                    # it's not executable. Not a Test.
-                    return make_broken(NotATest, test_path,
-                                       self.__not_test_str)
+                return self._make_simple_or_broken_test(test_path,
+                                                        subtests_filter,
+                                                        make_broken)
 
         # Since a lot of things can happen here, the broad exception is
         # justified. The user will get it unadulterated anyway, and avocado
@@ -893,14 +763,10 @@ class FileLoader(TestLoader):
         except BaseException as details:  # Ugly python files can raise any exc
             if isinstance(details, KeyboardInterrupt):
                 raise  # Don't ignore ctrl+c
-            if os.access(test_path, os.X_OK):
-                # Module can't be imported, and it's executable. Let's try to
-                # execute it.
-                return self._make_test(test.SimpleTest, test_path,
-                                       subtests_filter=subtests_filter,
-                                       executable=test_path)
             else:
-                return make_broken(NotATest, test_path, self.__not_test_str)
+                return self._make_simple_or_broken_test(test_path,
+                                                        subtests_filter,
+                                                        make_broken)
 
     @staticmethod
     def _make_test(klass, uid, description=None, subtests_filter=None,
@@ -928,7 +794,7 @@ class FileLoader(TestLoader):
         :param list_non_tests: include bad tests (NotATest, BrokenSymlink,...)
         :param subtests_filter: optional filter of methods for avocado tests
         """
-        def ignore_broken(klass, uid, description=None):
+        def ignore_broken(klass, uid, description=None):  # pylint: disable=W0613
             """ Always return empty list """
             return []
 
@@ -1008,7 +874,8 @@ class ExternalLoader(TestLoader):
 
         if runner:
             external_runner_and_args = shlex.split(runner)
-            executable = external_runner_and_args[0]
+            executable = os.path.abspath(external_runner_and_args[0])
+            runner = " ".join([executable] + external_runner_and_args[1:])
             if not os.path.exists(executable):
                 msg = ('Could not find the external runner executable "%s"'
                        % executable)
@@ -1034,11 +901,11 @@ class ExternalLoader(TestLoader):
             raise LoaderError(msg)
         return None  # Skip external runner
 
-    def discover(self, reference, which_tests=DEFAULT):
+    def discover(self, reference, which_tests=DiscoverMode.DEFAULT):
         """
         :param reference: arguments passed to the external_runner
-        :param which_tests: Limit tests to be displayed (ALL, AVAILABLE or
-                            DEFAULT)
+        :param which_tests: Limit tests to be displayed
+        :type which_tests: :class:`DiscoverMode`
         :return: list of matching tests
         """
         if (not self._external_runner) or (reference is None):

@@ -146,6 +146,8 @@ Once again, keeping your tests up-to-date and distinguishing between
 ``FAIL`` and ``ERROR`` will save you a lot of time while reviewing the
 test results.
 
+.. _saving-test-generated-custom-data:
+
 Saving test generated (custom) data
 ===================================
 
@@ -227,10 +229,12 @@ you intend to create it.
          for that specific test and execution conditions (such as with or
          without variants).  Look for "Test data directories" in the test logs.
 
-.. note:: An older API, :attr:`avocado.core.test.Test.datadir`, allows access
-          to the data directory based on the test file location only.  This API
-          is limited, deprecated and will be removed.  All new users should rely
-          on ``get_data()`` instead.
+.. note:: The previously existing API ``avocado.core.test.Test.datadir``,
+          used to allow access to the data directory based on the test file
+          location only.  This API has been removed.  If, for whatever reason
+          you still need to access the data directory based on the test file
+          location only, you can use
+          ``get_data(filename='', source='file', must_exist=False)`` instead.
 
 .. _accessing-test-parameters:
 
@@ -918,6 +922,13 @@ unified diff was logged. The unified diffs are also present in the files
 	-Hello, Avocado!
 	+Hello, world!
 
+
+.. note:: Currently the `stdout`, `stderr` and `output` files are
+          stored in text mode.  Data that can not be decoded according
+          to current locale settings, will be replaced according to
+          https://docs.python.org/3/library/codecs.html#codecs.replace_errors.
+
+
 Test log, stdout and stderr in native Avocado modules
 =====================================================
 
@@ -1029,7 +1040,7 @@ the test parameters, as shown below.
 	2016-11-02 11:13:04,411 stacktrace       L0038 ERROR| 
 	2016-11-02 11:13:04,412 stacktrace       L0041 ERROR| Reproduced traceback from: $HOME/src/avocado/avocado/core/test.py:454
 	2016-11-02 11:13:04,412 stacktrace       L0044 ERROR| Traceback (most recent call last):
-	2016-11-02 11:13:04,413 stacktrace       L0044 ERROR|   File "/usr/share/avocado/tests/sleeptest.py", line 23, in test
+	2016-11-02 11:13:04,413 stacktrace       L0044 ERROR|   File "/usr/share/doc/avocado/tests/sleeptest.py", line 23, in test
 	2016-11-02 11:13:04,413 stacktrace       L0044 ERROR|     time.sleep(sleep_length)
 	2016-11-02 11:13:04,413 stacktrace       L0044 ERROR|   File "$HOME/src/avocado/avocado/core/runner.py", line 293, in sigterm_handler
 	2016-11-02 11:13:04,413 stacktrace       L0044 ERROR|     raise SystemExit("Test interrupted by SIGTERM")
@@ -1195,181 +1206,90 @@ Now let's follow with some docstring directives examples.
 
 .. _docstring-directive-enable-disable:
 
-Explicitly enabling or disabling tests
---------------------------------------
+Declaring test as NOT-INSTRUMENTED
+----------------------------------
 
-If your test is a method in a class that directly inherits from
-:class:`avocado.Test`, then Avocado will find it as one would expect.
+In order to say `this class is not an Avocado instrumented` test, one
+can use ``:avocado: disable`` directive. The result is that this
+class itself is not discovered as an instrumented test, but children
+classes might inherit it's ``test*`` methods (useful for base-classes)::
 
-Now, the need may arise for more complex tests, to use more advanced
-Python features such as inheritance.  For those tests that are written
-in a class not directly inherting from :class:`avocado.Test`, Avocado
-may need your help, because Avocado uses only static analysis to examine
-the files.
+   from avocado import Test
 
-For example, suppose that you define a new test class that inherits
-from the Avocado base test class, that is, :class:`avocado.Test`, and
-put it in ``mylibrary.py``::
+   class BaseClass(Test):
+       """
+       :avocado: disable
+       """
+       def test_shared(self):
+           pass
 
-    from avocado import Test
+   class SpecificTests(BaseClass):
+       def test_specific(self):
+           pass
 
+Results in::
 
-    class MyOwnDerivedTest(Test):
-        def __init__(self, methodName='test', name=None, params=None,
-                     base_logdir=None, job=None, runner_queue=None):
-            super(MyOwnDerivedTest, self).__init__(methodName, name, params,
-                                                   base_logdir, job,
-                                                   runner_queue)
-            self.log('Derived class example')
+   INSTRUMENTED test.py:SpecificTests.test_specific
+   INSTRUMENTED test.py:SpecificTests.test_shared
 
-
-Then you implement your actual test using that derived class, in
-``mytest.py``::
-
-    import mylibrary
+The ``test.py:BaseBase.test`` is not discovered due the tag while
+the ``test.py:SpecificTests.test_shared`` is inherited from the
+base-class.
 
 
-    class MyTest(mylibrary.MyOwnDerivedTest):
+Declaring test as INSTRUMENTED
+------------------------------
 
-        def test1(self):
-            self.log('Testing something important')
+The ``:avocado: enable`` tag might be useful when you want to
+override that this is an `INSTRUMENTED` test, even though it is
+not inherited from ``avocado.Test`` class and/or when you want
+to only limit the ``test*`` methods discovery to the current
+class::
 
-        def test2(self):
-            self.log('Testing something even more important')
+   from avocado import Test
 
+   class NotInheritedFromTest(object):
+       """
+       :avocado: enable
+       """
+       def test(self):
+           pass
 
-If you try to list the tests in that file, this is what you'll get:
+   class BaseClass(Test):
+       """
+       :avocado: disable
+       """
+       def test_shared(self):
+           pass
 
-.. code-block:: none
+   class SpecificTests(BaseClass):
+       """
+       :avocado: enable
+       """
+       def test_specific(self):
+           pass
 
-    scripts/avocado list mytest.py -V
-    Type       Test      Tag(s)
-    NOT_A_TEST mytest.py
+Results in::
 
-    TEST TYPES SUMMARY
-    ==================
-    ACCESS_DENIED: 0
-    BROKEN_SYMLINK: 0
-    EXTERNAL: 0
-    FILTERED: 0
-    INSTRUMENTED: 0
-    MISSING: 0
-    NOT_A_TEST: 1
-    SIMPLE: 0
-    VT: 0
+   INSTRUMENTED test.py:NotInheritedFromTest.test
+   INSTRUMENTED test.py:SpecificTests.test_specific
 
-You need to give avocado a little help by adding a docstring
-directive. That docstring directive is ``:avocado: enable``. It tells
-the Avocado safe test detection code to consider it as an avocado
-test, regardless of what the (admittedly simple) detection code thinks
-of it. Let's see how that works out. Add the docstring, as you can see
-the example below::
-
-    import mylibrary
-
-
-    class MyTest(mylibrary.MyOwnDerivedTest):
-        """
-        :avocado: enable
-        """
-        def test1(self):
-            self.log('Testing something important')
-
-        def test2(self):
-            self.log('Testing something even more important')
+The ``test.py:NotInheritedFromTest.test`` will not really work
+as it lacks several required methods, but still is discovered
+as an `INSTRUMENTED` test due to ``enable`` tag and the
+``SpecificTests`` only looks at it's ``test*`` methods,
+ignoring the inheritance, therefor the
+``test.py:SpecificTests.test_shared`` will not be discovered.
 
 
-Now, trying to list the tests on the ``mytest.py`` file again:
+(Deprecated) enabling recursive discovery
+-----------------------------------------
 
-.. code-block:: none
+The ``:avocado: recursive`` tag was used to enable recursive
+discovery, but nowadays this is the default. By using this
+tag one explicitly sets the class as `INSTRUMENTED`, therefor
+inheritance from `avocado.Test` is not required.
 
-    scripts/avocado list mytest.py -V
-    Type         Test                   Tag(s)
-    INSTRUMENTED mytest.py:MyTest.test1
-    INSTRUMENTED mytest.py:MyTest.test2
-
-    TEST TYPES SUMMARY
-    ==================
-    ACCESS_DENIED: 0
-    BROKEN_SYMLINK: 0
-    EXTERNAL: 0
-    FILTERED: 0
-    INSTRUMENTED: 2
-    MISSING: 0
-    NOT_A_TEST: 0
-    SIMPLE: 0
-    VT: 0
-
-You can also use the ``:avocado: disable`` docstring directive, that
-works the opposite way: something that would be considered an Avocado
-test, but we force it to not be listed as one.
-
-The docstring ``:avocado: disable`` is evaluated first by Avocado,
-meaning that if both ``:avocado: disable`` and ``:avocado: enable`` are
-present in the same docstring, the test will not be listed.
-
-.. _docstring-directive-recursive:
-
-Recursively Discovering Tests
------------------------------
-
-In addition to the ``:avocado: enable`` and ``:avocado: disable``
-docstring directives, Avocado has support for the ``:avocado: recursive``
-directive. It is intended to be used in inherited classes when you want
-to tell Avocado to also discover the ancestor classes.
-
-The ``:avocado: recursive`` directive will direct Avocado to evaluate all
-the ancestors of the class until the base class, the one derived from
-from ``avocado.Test``.
-
-Example:
-
-File `/usr/share/avocado/tests/test_base_class.py`::
-
-    from avocado import Test
-
-
-    class BaseClass(Test):
-
-        def test_basic(self):
-            pass
-
-
-File `/usr/share/avocado/tests/test_first_child.py`::
-
-    from test_base_class import BaseClass
-
-
-    class FirstChild(BaseClass):
-
-        def test_first_child(self):
-            pass
-
-
-File `/usr/share/avocado/tests/test_second_child.py`::
-
-    from test_first_child import FirstChild
-
-
-    class SecondChild(FirstChild):
-        """
-        :avocado: recursive
-        """
-
-        def test_second_child(self):
-            pass
-
-Using only `test_second_child.py` as a test reference will result in::
-
-    $ avocado list test_second_child.py
-    INSTRUMENTED test_second_child.py:SecondChild.test_second_child
-    INSTRUMENTED test_second_child.py:SecondChild.test_first_child
-    INSTRUMENTED test_second_child.py:SecondChild.test_basic
-
-Notice that the ``:avocado: disable`` docstring will be ignored in
-ancestors during the recursive discovery. What means that even if an
-ancestor contains the docstring ``:avocado: disable``, that ancestor will
-still be included in the results.
 
 .. _categorizing-tests:
 
@@ -1559,6 +1479,65 @@ inclusion of tests without tags::
   INSTRUMENTED perf.py:Idle.test_idle
   INSTRUMENTED perf.py:Disk.test_device
 
+.. _tags_keyval:
+
+Using further categorization with keys and values
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+All the examples given so far are limited to "flat" tags.  Sometimes,
+it's helpful to categorize tests with extra context.  For instance, if
+you have tests that are sensitive to the platform endianess, you may
+way to categorize them by endianess, while at the same time,
+specifying the exact type of endianess that is required.
+
+Example::
+
+  class ByteOrder(Test):
+      def test_le(self):
+          """
+          :avocado: tags=endianess:little
+          """
+          ...
+
+      def test_be(self):
+          """
+          :avocado: tags=endianess:big
+          """
+          ...
+
+  class Generic(Test):
+      def test(self):
+          """
+          :avocado: tags=generic
+          """
+
+To list tests without any type of filtering would give you::
+
+  $ avocado list byteorder.py
+  INSTRUMENTED byteorder.py:ByteOrder.test_le
+  INSTRUMENTED byteorder.py:ByteOrder.test_be
+  INSTRUMENTED byteorder.py:Generic.test
+
+To list tests that are somehow related to endianess, you can use::
+
+  $ avocado list byteorder.py --filter-by-tags endianess
+  INSTRUMENTED byteorder.py:ByteOrder.test_le
+  INSTRUMENTED byteorder.py:ByteOrder.test_be
+
+And to be even more specific, you can use::
+
+  $ avocado list byteorder.py --filter-by-tags endianess:big
+  INSTRUMENTED byteorder.py:ByteOrder.test_be
+
+Now, suppose you intend to run tests on a little endian platform,
+but you'd still want to include tests that are generic enough to
+run on either little or big endian (but not tests that are specific
+to other types of endianess), you could use::
+
+  $ avocado list byteorder.py --filter-by-tags endianess:big --filter-by-tags-include-empty-key
+  INSTRUMENTED byteorder.py:ByteOrder.test_be
+  INSTRUMENTED byteorder.py:Generic.test
+
 Python :mod:`unittest` Compatibility Limitations And Caveats
 ============================================================
 
@@ -1665,8 +1644,6 @@ tests:
 +-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
 | AVOCADO_TEST_BASEDIR        | Base directory of Avocado tests       | $HOME/Downloads/avocado-source/avocado                                                              |
 +-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
-| AVOCADO_TEST_DATADIR        | Data directory for the test           | $AVOCADO_TEST_BASEDIR/my_test.sh.data                                                               |
-+-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
 | AVOCADO_TEST_WORKDIR        | Work directory for the test           | /var/tmp/avocado_Bjr_rd/my_test.sh                                                                  |
 +-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
 | AVOCADO_TESTS_COMMON_TMPDIR | Temporary directory created by the    | /var/tmp/avocado_XhEdo/                                                                             |
@@ -1684,12 +1661,17 @@ tests:
 +-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
 | `***`                       | All variables from --mux-yaml         | TIMEOUT=60; IO_WORKERS=10; VM_BYTES=512M; ...                                                       |
 +-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
-| AVOCADO_TEST_SRCDIR         | Source directory for the test         | /var/tmp/avocado_Bjr_rd/my-test.sh/src                                                              |
-+-----------------------------+---------------------------------------+-----------------------------------------------------------------------------------------------------+
 
-.. warning:: ``AVOCADO_TEST_SRCDIR`` is deprecated and will be removed
-             soon.  Please use ``AVOCADO_TEST_WORKDIR`` instead.
+.. warning:: ``AVOCADO_TEST_SRCDIR`` was present in earlier versions,
+             but has been deprecated on version 60.0, and removed on
+             version 62.0.  Please use ``AVOCADO_TEST_WORKDIR``
+             instead.
 
+.. warning:: ``AVOCADO_TEST_DATADIR`` was present in earlier versions,
+             but has been deprecated on version 60.0, and removed on
+             version 62.0.  The test data files (and directories) are
+             now dynamically evaluated and are not available as
+             environment variables
 
 SIMPLE Tests BASH extensions
 ============================

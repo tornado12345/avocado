@@ -42,6 +42,15 @@ class Run(CLICmd):
     description = ("Runs one or more tests (native test, test alias, binary "
                    "or script)")
 
+    @staticmethod
+    def _test_parameter(string):
+        param_name_value = string.split('=', 1)
+        if len(param_name_value) < 2:
+            msg = ('Invalid --test-parameter option: "%s". Valid option must '
+                   'be a "NAME=VALUE" like expression' % string)
+            raise argparse.ArgumentTypeError(msg)
+        return param_name_value
+
     def configure(self, parser):
         """
         Add the subparser for the run action.
@@ -54,9 +63,22 @@ class Run(CLICmd):
                             metavar="TEST_REFERENCE",
                             help='List of test references (aliases or paths)')
 
+        parser.add_argument("-p", "--test-parameter", action="append",
+                            dest='test_parameters', default=[],
+                            metavar="NAME_VALUE", type=self._test_parameter,
+                            help="Parameter name and value to pass to all "
+                            "tests. This is only applicable when not using a "
+                            "varianter plugin. This option format must be "
+                            "given in the NAME=VALUE format, and may be given "
+                            "any number of times, or per parameter.")
+
         parser.add_argument("-d", "--dry-run", action="store_true",
                             help="Instead of running the test only "
                             "list them and log their params.")
+
+        parser.add_argument("--dry-run-no-cleanup", action="store_true",
+                            help="Do not automatically clean up temporary "
+                            "directories used by dry-run", default=False)
 
         parser.add_argument('--force-job-id', dest='unique_job_id',
                             type=str, default=None,
@@ -182,6 +204,13 @@ class Run(CLICmd):
                                      'filtering. This effectively means they '
                                      'will be kept in the test suite found '
                                      'previously to filtering.'))
+        filtering.add_argument('--filter-by-tags-include-empty-key',
+                               action='store_true', default=False,
+                               help=('Include all tests that do not have a '
+                                     'matching key in its key:val tags. This '
+                                     'effectively means those tests will be '
+                                     'kept in the test suite found previously '
+                                     'to filtering.'))
 
     def run(self, args):
         """
@@ -204,8 +233,8 @@ class Run(CLICmd):
                 sys.exit(exit_codes.AVOCADO_FAIL)
         try:
             args.job_timeout = time_to_seconds(args.job_timeout)
-        except ValueError as e:
-            LOG_UI.error(e.args[0])
+        except ValueError as detail:
+            LOG_UI.error(detail.args[0])
             sys.exit(exit_codes.AVOCADO_FAIL)
         with job.Job(args) as job_instance:
             pre_post_dispatcher = JobPrePostDispatcher()
@@ -219,9 +248,9 @@ class Run(CLICmd):
                 # Run JobPost plugins
                 pre_post_dispatcher.map_method('post', job_instance)
 
-        result_dispatcher = ResultDispatcher()
-        if result_dispatcher.extensions:
-            result_dispatcher.map_method('render',
-                                         job_instance.result,
-                                         job_instance)
+            result_dispatcher = ResultDispatcher()
+            if result_dispatcher.extensions:
+                result_dispatcher.map_method('render',
+                                             job_instance.result,
+                                             job_instance)
         return job_run

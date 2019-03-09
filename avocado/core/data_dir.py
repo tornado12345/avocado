@@ -31,8 +31,6 @@ import sys
 import time
 import tempfile
 
-from six.moves import xrange as range
-
 from . import job_id
 from . import settings
 from . import exit_codes
@@ -107,14 +105,14 @@ def get_test_dir():
     4) User default test dir (~/avocado/tests) is used
     """
     configured = _get_settings_dir('test_dir')
-    if utils_path.usable_ro_dir(configured):
+    if utils_path.usable_ro_dir(configured, False):
         return configured
 
     if settings.settings.intree:
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         return os.path.join(base_dir, 'examples', 'tests')
 
-    if utils_path.usable_ro_dir(SYSTEM_TEST_DIR):
+    if utils_path.usable_ro_dir(SYSTEM_TEST_DIR, False):
         return SYSTEM_TEST_DIR
 
     if utils_path.usable_ro_dir(USER_TEST_DIR):
@@ -197,6 +195,18 @@ def create_job_logs_dir(base_dir=None, unique_id=None):
         return logdir + str(i)
     raise IOError("Unable to create unique logdir in 1000 iterations: %s"
                   % (logdir))
+
+
+def get_cache_dirs():
+    """
+    Returns the list of cache dirs, according to configuration and convention
+    """
+    cache_dirs = settings.settings.get_value('datadir.paths', 'cache_dirs',
+                                             key_type=list, default=[])
+    datadir_cache = os.path.join(get_data_dir(), 'cache')
+    if datadir_cache not in cache_dirs:
+        cache_dirs.append(datadir_cache)
+    return cache_dirs
 
 
 class _TmpDirTracker(Borg):

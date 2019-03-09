@@ -1,7 +1,5 @@
 import unittest
 
-from six.moves import xrange as range
-
 from avocado.utils import data_structures
 
 
@@ -38,6 +36,18 @@ class TestDataStructures(unittest.TestCase):
         self.assertEqual(data_structures.compare_matrices(matrix1, matrix2),
                          ([["header", '+10.6383', -10.0],
                            ['+100', 'error_51/0', '.']], 3, 1, 5))
+
+    def test_comma_separated_ranges_to_list(self):
+        """
+        Verify the correct value is obtained when converting a comma separated
+        range string to list
+        """
+        node_values = ["0", "1-3", "0-1,16-17", "0-1,16-20,23-25"]
+        expected_values = [[0], [1, 2, 3], [0, 1, 16, 17],
+                           [0, 1, 16, 17, 18, 19, 20, 23, 24, 25]]
+        for index, value in enumerate(node_values):
+            self.assertEqual(data_structures.comma_separated_ranges_to_list(
+                value), expected_values[index])
 
     def test_lazy_property(self):
         """
@@ -113,8 +123,8 @@ class TestDataSize(unittest.TestCase):
                           data_structures.DataSize, '10Mb')
 
     def test_value_and_type(self):
-        self.assertIs(data_structures.DataSize('0b').b, 0)
-        self.assertIs(data_structures.DataSize('0t').b, 0)
+        self.assertEqual(data_structures.DataSize('0b').b, 0)
+        self.assertEqual(data_structures.DataSize('0t').b, 0)
 
     def test_values(self):
         self.assertEqual(data_structures.DataSize('10m').b, 10485760)

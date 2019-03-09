@@ -19,6 +19,7 @@ Avocado generic IO related functions.
 import logging
 import os
 import time
+import re
 
 from six.moves import input
 
@@ -35,7 +36,6 @@ class GenIOError(Exception):
     """
     Base Exception Class for all IO exceptions
     """
-    pass
 
 
 def log_line(filename, line):
@@ -46,7 +46,7 @@ def log_line(filename, line):
                      the dir set by set_log_file_dir().
     :param line: Line to write.
     """
-    global _open_log_files, _log_file_dir
+    global _open_log_files, _log_file_dir  # pylint: disable=W0603
 
     path = utils_path.get_path(_log_file_dir, filename)
     if path not in _open_log_files:
@@ -69,12 +69,12 @@ def set_log_file_dir(directory):
 
     :param dir: Directory for log files.
     """
-    global _log_file_dir
+    global _log_file_dir  # pylint: disable=W0603
     _log_file_dir = directory
 
 
 def close_log_file(filename):
-    global _open_log_files, _log_file_dir
+    global _open_log_files, _log_file_dir  # pylint: disable=W0603
     remove = []
     for k in _open_log_files:
         if os.path.basename(k) == filename:
@@ -99,7 +99,7 @@ def ask(question, auto=False):
     :rtype: str
     """
     if auto:
-        log.info("%s (y/n) y" % question)
+        log.info("%s (y/n) y", question)
         return "y"
     return input("%s (y/n) " % question)
 
@@ -201,3 +201,25 @@ def write_file_or_fail(filename, data):
     except OSError as details:
         raise GenIOError("The write to %s failed: %s" % (
                          filename, details))
+
+
+def is_pattern_in_file(filename,  pattern):
+    """
+    Check if a pattern matches in a specified file. If a non
+    regular file be informed a GenIOError will be raised.
+
+    :param filename: Path to file
+    :type filename: str
+    :param pattern: Pattern that need to match in file
+    :type pattern: str
+    :return: True when pattern matches in file if not
+             return False
+    :rtype: boolean
+    """
+    if not os.path.isfile(filename):
+        raise GenIOError('invalid file %s to match pattern %s'
+                         % (filename, pattern))
+    with open(filename, 'r') as content_file:
+        if re.search(pattern, content_file.read(), re.MULTILINE):
+            return True
+    return False

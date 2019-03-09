@@ -11,6 +11,11 @@ from avocado.core.result import Result
 from avocado.core.runner import TestRunner
 from avocado.core.tree import TreeNode
 
+from .. import setup_avocado_loggers
+
+
+setup_avocado_loggers()
+
 
 class TestRunnerQueue(unittest.TestCase):
     """
@@ -55,7 +60,7 @@ class TestRunnerQueue(unittest.TestCase):
                     'base_logdir': self.tmpdir}]
         msg = self._run_test(factory)
 
-        self.assertEqual(msg['whiteboard'], 'ZGVmYXVsdCB3\n')
+        self.assertEqual(msg['whiteboard'], 'TXkgbWVzc2FnZSBlbmNvZGVkIGluIGJhc2U2NA==\n')
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)

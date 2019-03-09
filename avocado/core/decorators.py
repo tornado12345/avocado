@@ -45,8 +45,8 @@ def fail_on(exceptions=None):
             """ Function wrapper """
             try:
                 return func(*args, **kwargs)
-            except core_exceptions.TestBaseException:
-                raise
+            except core_exceptions.TestBaseException as exc:
+                raise exc
             except exceptions as details:
                 raise core_exceptions.TestFail(str(details))
         return wrap
@@ -62,7 +62,7 @@ def skip(message=None):
     def decorator(function):
         if not isinstance(function, type):
             @wraps(function)
-            def wrapper(*args, **kwargs):
+            def wrapper(*args, **kwargs):  # pylint: disable=W0613
                 raise core_exceptions.TestSkipError(message)
             function = wrapper
         function.__skip_test_decorator__ = True

@@ -4,7 +4,9 @@
 Getting Started
 ===============
 
-The first step towards using Avocado is, quite obviously, installing it.
+Those who prefer video-introduction, take a look at :ref:`other_resources`.
+Either way first step towards using Avocado is, quite obviously, installing
+it.
 
 .. Note: this section section shares content with the project README
          file.  When editing this section, also sync the content with
@@ -19,6 +21,12 @@ Installing Avocado
 
 Avocado is primarily written in Python, so a standard Python installation
 is possible and often preferable.
+
+.. tip:: If you are looking for Virtualization specific testing, also
+         consider looking at `Avocado-VT installation instructions
+         <https://avocado-vt.readthedocs.io/en/latest/GetStartedGuide.html#installing-avocado-vt>`_
+         after finishing the Avocado installation.
+
 
 Installing with standard Python tools
 -------------------------------------
@@ -50,13 +58,18 @@ as additional packages on PyPI.  You should be able to find them via
 ``pip search avocado-framework-plugin | grep
 avocado-framework-plugin``. Some of them are listed below:
 
+* `avocado-framework-plugin-glib <https://pypi.python.org/pypi/avocado-framework-plugin-glib>`_: Execution of GLib Test Framework tests
+* `avocado-framework-plugin-golang <https://pypi.python.org/pypi/avocado-framework-plugin-glib>`_: Execution of Golang tests
+* `avocado-framework-plugin-loader-yaml <https://pypi.python.org/pypi/avocado-framework-plugin-loader-yaml>`_: Loads tests from YAML files
 * `avocado-framework-plugin-result-html <https://pypi.python.org/pypi/avocado-framework-plugin-result-html>`_: HTML Report for Jobs
+* `avocado-framework-plugin-result-upload  <https://pypi.python.org/pypi/avocado-framework-plugin-result-upload>`_: Propagate Job results to remote host
 * `avocado-framework-plugin-resultsdb <https://pypi.python.org/pypi/avocado-framework-plugin-resultsdb>`_: Propagate Job results to Resultsdb
+* `avocado-framework-plugin-robot <https://pypi.python.org/pypi/avocado-framework-plugin-robot>`_: Execution of Robot Framework tests
+* `avocado-framework-plugin-runner-docker <https://pypi.python.org/pypi/avocado-framework-plugin-runner-docker>`_: Runner for Execution on Docker Containers
 * `avocado-framework-plugin-runner-remote <https://pypi.python.org/pypi/avocado-framework-plugin-runner-remote>`_: Runner for Remote Execution
 * `avocado-framework-plugin-runner-vm <https://pypi.python.org/pypi/avocado-framework-plugin-runner-vm>`_: Runner for libvirt VM Execution
-* `avocado-framework-plugin-runner-docker <https://pypi.python.org/pypi/avocado-framework-plugin-runner-docker>`_: Runner for Execution on Docker Containers
-* `avocado-framework-plugin-loader-yaml <https://pypi.python.org/pypi/avocado-framework-plugin-loader-yaml>`_: Loads tests from YAML files
-* `avocado-framework-plugin-robot <https://pypi.python.org/pypi/avocado-framework-plugin-robot>`_: Execution of Robot Framework tests
+* `avocado-framework-plugin-varianter-cit <https://pypi.python.org/pypi/avocado-framework-plugin-varianter-cit>`_: Varianter with combinatorial capabilities
+* `avocado-framework-plugin-varianter-pict: <https://pypi.python.org/pypi/avocado-framework-plugin-varianter-pict>`_: Varianter with combinatorial capabilities by PICT
 * `avocado-framework-plugin-varianter-yaml-to-mux <https://pypi.python.org/pypi/avocado-framework-plugin-varianter-yaml-to-mux>`_: Parse YAML file into variants
 
 Installing from Packages
@@ -72,14 +85,13 @@ name is ``python-avocado``, and can be installed with::
 
 Other available packages (depending on the Avocado version) may include:
 
-* ``python-avocado-examples``: contains example tests and other example files
-* ``python2-avocado-plugins-output-html``: HTML job report plugin
-* ``python2-avocado-plugins-resultsdb``: propagate Job results to Resultsdb
-* ``python2-avocado-plugins-runner-remote``: execution of jobs on a remote machine
-* ``python2-avocado-plugins-runner-vm``: execution of jobs on a libvirt based VM
-* ``python2-avocado-plugins-runner-docker``: execution of jobs on a Docker container
-* ``python-avocado-plugins-varianter-yaml-to-mux``: parse YAML file into variants
-* ``python2-avocado-plugins-varianter-pict``: varianter with combinatorial capabilities by PICT
+* ``python-avocado-examples``: Avocado Test Framework Example Tests
+* ``python2-avocado-plugins-output-html``: Avocado HTML report plugin
+* ``python2-avocado-plugins-runner-remote``: Avocado Runner for Remote Execution
+* ``python2-avocado-plugins-runner-vm``: Avocado Runner for libvirt VM Execution
+* ``python2-avocado-plugins-resultsdb``: Avocado plugin to propagate job results to ResultsDB
+* ``python2-avocado-plugins-runner-docker``: Avocado Runner for Execution on Docker Containers
+* ``python2-avocado-plugins-varianter-yaml-to-mux``: Avocado plugin to generate variants out of yaml files
 
 .. _fedora-from-avocados-own-repo:
 
@@ -143,19 +155,46 @@ installation ready::
 
 Other available packages (depending on the Avocado version) may include:
 
-* ``python-avocado-examples``: contains example tests and other example files
-* ``python2-avocado-plugins-output-html``: HTML job report plugin
-* ``python2-avocado-plugins-resultsdb``: propagate Job results to Resultsdb
-* ``python2-avocado-plugins-runner-remote``: execution of jobs on a remote machine
-* ``python2-avocado-plugins-runner-vm``: execution of jobs on a libvirt based VM
-* ``python2-avocado-plugins-runner-docker``: execution of jobs on a Docker container
-* ``python-avocado-plugins-varianter-yaml-to-mux``: parse YAML file into variants
-* ``python2-avocado-plugins-varianter-pict``: varianter with combinatorial capabilities by PICT
+* ``python-avocado-bash``: Avocado Test Framework Bash Utilities
+* ``python-avocado-common``: Avocado common files
+* ``python-avocado-examples``: Avocado Test Framework Example Tests
+* ``python2-avocado-plugins-glib``: Avocado Plugin for Execution of GLib Test Framework tests
+* ``python2-avocado-plugins-golang``: Avocado Plugin for Execution of golang tests
+* ``python2-avocado-plugins-loader-yaml``: Avocado Plugin that loads tests from YAML files
+* ``python2-avocado-plugins-output-html``: Avocado HTML report plugin
+* ``python2-avocado-plugins-result-upload``: Avocado Plugin to propagate Job results to a remote host
+* ``python2-avocado-plugins-resultsdb``: Avocado plugin to propagate job results to ResultsDB
+* ``python2-avocado-plugins-runner-docker``: Avocado Runner for Execution on Docker Containers
+* ``python2-avocado-plugins-runner-remote``: Avocado Runner for Remote Execution
+* ``python2-avocado-plugins-runner-vm``: Avocado Runner for libvirt VM Execution
+* ``python2-avocado-plugins-varianter-cit``: Varianter with Combinatorial Independent Testing capabilities
+* ``python2-avocado-plugins-varianter-pict``: Varianter with combinatorial capabilities by PICT
+* ``python2-avocado-plugins-varianter-yaml-to-mux``: Avocado plugin to generate variants out of yaml files
 
 The LTS (Long Term Stability) repositories are also available for
 Enterprise Linux.  Please refer to :ref:`rfc-long-term-stability` and
 to your package management docs on how to switch to the
 ``avocado-lts`` repo.
+
+Latest Development RPM Packages from COPR
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Avocado provides a repository of continuously built packages from the
+GitHub repository's master branch.  These packages are currently
+available for EL7, Fedora 28 and Fedora 29, for both x86_64 and
+ppc64le.
+
+If you're interested in using the very latest development version of
+Avocado from RPM packages, you can do so by running::
+
+  dnf copr enable @avocado/avocado-latest
+  dnf install python*-avocado*
+
+The following image shows the status of the Avocado packages building
+on COPR:
+
+  .. image:: https://copr.fedorainfracloud.org/coprs/g/avocado/avocado-latest/package/python-avocado/status_image/last_build.png
+     :target: https://copr.fedorainfracloud.org/coprs/g/avocado/avocado-latest/package/python-avocado/
 
 OpenSUSE
 ~~~~~~~~
@@ -254,24 +293,24 @@ If no arguments provided, Avocado lists "default" tests per each plugin.
 The output might look like this::
 
     $ avocado list
-    INSTRUMENTED /usr/share/avocado/tests/abort.py
-    INSTRUMENTED /usr/share/avocado/tests/datadir.py
-    INSTRUMENTED /usr/share/avocado/tests/doublefail.py
-    INSTRUMENTED /usr/share/avocado/tests/doublefree.py
-    INSTRUMENTED /usr/share/avocado/tests/errortest.py
-    INSTRUMENTED /usr/share/avocado/tests/failtest.py
-    INSTRUMENTED /usr/share/avocado/tests/fiotest.py
-    INSTRUMENTED /usr/share/avocado/tests/gdbtest.py
-    INSTRUMENTED /usr/share/avocado/tests/gendata.py
-    INSTRUMENTED /usr/share/avocado/tests/linuxbuild.py
-    INSTRUMENTED /usr/share/avocado/tests/multiplextest.py
-    INSTRUMENTED /usr/share/avocado/tests/passtest.py
-    INSTRUMENTED /usr/share/avocado/tests/sleeptenmin.py
-    INSTRUMENTED /usr/share/avocado/tests/sleeptest.py
-    INSTRUMENTED /usr/share/avocado/tests/synctest.py
-    INSTRUMENTED /usr/share/avocado/tests/timeouttest.py
-    INSTRUMENTED /usr/share/avocado/tests/warntest.py
-    INSTRUMENTED /usr/share/avocado/tests/whiteboard.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/abort.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/datadir.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/doublefail.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/doublefree.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/errortest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/failtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/fiotest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/gdbtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/gendata.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/linuxbuild.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/multiplextest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/passtest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/sleeptenmin.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/sleeptest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/synctest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/timeouttest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/warntest.py
+    INSTRUMENTED /usr/share/doc/avocado/tests/whiteboard.py
     ...
 
 These Python files are considered by Avocado to contain ``INSTRUMENTED``
@@ -280,11 +319,11 @@ tests.
 Let's now list only the executable shell scripts::
 
     $ avocado list | grep ^SIMPLE
-    SIMPLE       /usr/share/avocado/tests/env_variables.sh
-    SIMPLE       /usr/share/avocado/tests/output_check.sh
-    SIMPLE       /usr/share/avocado/tests/simplewarning.sh
-    SIMPLE       /usr/share/avocado/tests/failtest.sh
-    SIMPLE       /usr/share/avocado/tests/passtest.sh
+    SIMPLE       /usr/share/doc/avocado/tests/env_variables.sh
+    SIMPLE       /usr/share/doc/avocado/tests/output_check.sh
+    SIMPLE       /usr/share/doc/avocado/tests/simplewarning.sh
+    SIMPLE       /usr/share/doc/avocado/tests/failtest.sh
+    SIMPLE       /usr/share/doc/avocado/tests/passtest.sh
 
 Here, as mentioned before, ``SIMPLE`` means that those files are executables
 treated as simple tests. You can also give the ``--verbose`` or ``-V`` flag to

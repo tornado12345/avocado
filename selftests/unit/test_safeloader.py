@@ -1,9 +1,68 @@
 import ast
+import sys
+import os
 import re
 import unittest
 
 from avocado.core import safeloader
 from avocado.utils import script
+
+from .. import BASEDIR, setup_avocado_loggers
+
+
+setup_avocado_loggers()
+
+
+KEEP_METHODS_ORDER = '''
+from avocado import Test
+
+class MyClass(Test):
+    def test2(self):
+        pass
+
+    def testA(self):
+        pass
+
+    def test1(self):
+        pass
+
+    def testZZZ(self):
+        pass
+
+    def test(self):
+        pass
+'''
+
+RECURSIVE_DISCOVERY_TEST1 = """
+from avocado import Test
+
+class BaseClass(Test):
+    def test_basic(self):
+        pass
+
+class FirstChild(BaseClass):
+    def test_first_child(self):
+        pass
+
+class SecondChild(FirstChild):
+    '''
+    :avocado: disable
+    '''
+    def test_second_child(self):
+        pass
+"""
+
+RECURSIVE_DISCOVERY_TEST2 = """
+from avocado import Test
+from recursive_discovery_test1 import SecondChild
+
+class ThirdChild(Test, SecondChild):
+    '''
+    :avocado: recursive
+    '''
+    def test_third_child(self):
+        pass
+"""
 
 
 def get_this_file():
@@ -79,17 +138,6 @@ class DocstringDirectives(unittest.TestCase):
                ":avocado: tags=SLOW,disk, invalid",
                ":avocado: tags=SLOW,disk , invalid"]
 
-    VALID_TAGS = {":avocado: tags=fast": set(["fast"]),
-                  ":avocado: tags=fast,network": set(["fast", "network"]),
-                  ":avocado: tags=fast,,network": set(["fast", "network"]),
-                  ":avocado: tags=slow,DISK": set(["slow", "DISK"]),
-                  ":avocado: tags=SLOW,disk,disk": set(["SLOW", "disk"]),
-                  ":avocado:\ttags=FAST": set(["FAST"]),
-                  ":avocado: tags=": set([]),
-                  ":avocado: enable\n:avocado: tags=fast": set(["fast"]),
-                  ":avocado: tags=fast,slow\n:avocado: enable": set(["fast", "slow"])
-                  }
-
     def test_longline(self):
         docstring = ("This is a very long docstring in a single line. "
                      "Since we have nothing useful to put in here let's just "
@@ -119,11 +167,67 @@ class DocstringDirectives(unittest.TestCase):
 
     def test_get_tags_empty(self):
         for tag in self.NO_TAGS:
-            self.assertEqual(set([]), safeloader.get_docstring_directives_tags(tag))
+            self.assertEqual({}, safeloader.get_docstring_directives_tags(tag))
 
-    def test_get_tags(self):
-        for raw, tags in self.VALID_TAGS.items():
-            self.assertEqual(safeloader.get_docstring_directives_tags(raw), tags)
+    def test_tag_single(self):
+        raw = ":avocado: tags=fast"
+        exp = {"fast": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_double(self):
+        raw = ":avocado: tags=fast,network"
+        exp = {"fast": None, "network": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_double_with_empty(self):
+        raw = ":avocado: tags=fast,,network"
+        exp = {"fast": None, "network": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_lowercase_uppercase(self):
+        raw = ":avocado: tags=slow,DISK"
+        exp = {"slow": None, "DISK": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_duplicate(self):
+        raw = ":avocado: tags=SLOW,disk,disk"
+        exp = {"SLOW": None, "disk": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_tab_separator(self):
+        raw = ":avocado:\ttags=FAST"
+        exp = {"FAST": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_empty(self):
+        raw = ":avocado: tags="
+        exp = {}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_newline_before(self):
+        raw = ":avocado: enable\n:avocado: tags=fast"
+        exp = {"fast": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_newline_after(self):
+        raw = ":avocado: tags=fast,slow\n:avocado: enable"
+        exp = {"fast": None, "slow": None}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_keyval_single(self):
+        raw = ":avocado: tags=fast,arch:x86_64"
+        exp = {"fast": None, "arch": set(["x86_64"])}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_keyval_double(self):
+        raw = ":avocado: tags=fast,arch:x86_64,arch:ppc64"
+        exp = {"fast": None, "arch": set(["x86_64", "ppc64"])}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
+
+    def test_tag_keyval_duplicate(self):
+        raw = ":avocado: tags=fast,arch:x86_64,arch:ppc64,arch:x86_64"
+        exp = {"fast": None, "arch": set(["x86_64", "ppc64"])}
+        self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
 
     def test_directives_regex(self):
         """
@@ -150,6 +254,12 @@ class FindClassAndMethods(UnlimitedDiff):
 
     def test_self(self):
         reference = {
+            'AvocadoModule': ['setUp',
+                              'test_add_imported_empty',
+                              'test_add_imported_object_from_module',
+                              'test_add_imported_object_from_module_asname',
+                              'test_is_not_avocado_test',
+                              'test_is_avocado_test'],
             'ModuleImportedAs': ['_test',
                                  'test_foo',
                                  'test_foo_as_bar',
@@ -160,12 +270,25 @@ class FindClassAndMethods(UnlimitedDiff):
                                     'test_enabled',
                                     'test_disabled',
                                     'test_get_tags_empty',
-                                    'test_get_tags',
+                                    'test_tag_single',
+                                    'test_tag_double',
+                                    'test_tag_double_with_empty',
+                                    'test_tag_lowercase_uppercase',
+                                    'test_tag_duplicate',
+                                    'test_tag_tab_separator',
+                                    'test_tag_empty',
+                                    'test_tag_newline_before',
+                                    'test_tag_newline_after',
+                                    'test_tag_keyval_single',
+                                    'test_tag_keyval_double',
+                                    'test_tag_keyval_duplicate',
                                     'test_directives_regex'],
             'FindClassAndMethods': ['test_self',
                                     'test_with_pattern',
                                     'test_with_base_class',
-                                    'test_with_pattern_and_base_class'],
+                                    'test_with_pattern_and_base_class',
+                                    'test_methods_order',
+                                    'test_recursive_discovery'],
             'UnlimitedDiff': ['setUp']
         }
         found = safeloader.find_class_and_methods(get_this_file())
@@ -173,6 +296,11 @@ class FindClassAndMethods(UnlimitedDiff):
 
     def test_with_pattern(self):
         reference = {
+            'AvocadoModule': ['test_add_imported_empty',
+                              'test_add_imported_object_from_module',
+                              'test_add_imported_object_from_module_asname',
+                              'test_is_not_avocado_test',
+                              'test_is_avocado_test'],
             'ModuleImportedAs': ['test_foo',
                                  'test_foo_as_bar',
                                  'test_foo_as_foo',
@@ -182,12 +310,25 @@ class FindClassAndMethods(UnlimitedDiff):
                                     'test_enabled',
                                     'test_disabled',
                                     'test_get_tags_empty',
-                                    'test_get_tags',
+                                    'test_tag_single',
+                                    'test_tag_double',
+                                    'test_tag_double_with_empty',
+                                    'test_tag_lowercase_uppercase',
+                                    'test_tag_duplicate',
+                                    'test_tag_tab_separator',
+                                    'test_tag_empty',
+                                    'test_tag_newline_before',
+                                    'test_tag_newline_after',
+                                    'test_tag_keyval_single',
+                                    'test_tag_keyval_double',
+                                    'test_tag_keyval_duplicate',
                                     'test_directives_regex'],
             'FindClassAndMethods': ['test_self',
                                     'test_with_pattern',
                                     'test_with_base_class',
-                                    'test_with_pattern_and_base_class'],
+                                    'test_with_pattern_and_base_class',
+                                    'test_methods_order',
+                                    'test_recursive_discovery'],
             'UnlimitedDiff': []
         }
         found = safeloader.find_class_and_methods(get_this_file(),
@@ -199,7 +340,9 @@ class FindClassAndMethods(UnlimitedDiff):
             'FindClassAndMethods': ['test_self',
                                     'test_with_pattern',
                                     'test_with_base_class',
-                                    'test_with_pattern_and_base_class'],
+                                    'test_with_pattern_and_base_class',
+                                    'test_methods_order',
+                                    'test_recursive_discovery'],
         }
         found = safeloader.find_class_and_methods(get_this_file(),
                                                   base_class='UnlimitedDiff')
@@ -209,12 +352,78 @@ class FindClassAndMethods(UnlimitedDiff):
         reference = {
             'FindClassAndMethods': ['test_with_pattern',
                                     'test_with_base_class',
-                                    'test_with_pattern_and_base_class'],
+                                    'test_with_pattern_and_base_class']
         }
         found = safeloader.find_class_and_methods(get_this_file(),
                                                   re.compile(r'test_with.*'),
                                                   'UnlimitedDiff')
         self.assertEqual(reference, found)
+
+    def test_methods_order(self):
+        avocado_keep_methods_order = script.TemporaryScript(
+            'keepmethodsorder.py',
+            KEEP_METHODS_ORDER)
+        avocado_keep_methods_order.save()
+        expected_order = ['test2', 'testA', 'test1', 'testZZZ', 'test']
+        tests = safeloader.find_avocado_tests(avocado_keep_methods_order.path)[0]
+        methods = [method[0] for method in tests['MyClass']]
+        self.assertEqual(expected_order, methods)
+        avocado_keep_methods_order.remove()
+
+    def test_recursive_discovery(self):
+        avocado_recursive_discovery_test1 = script.TemporaryScript(
+            'recursive_discovery_test1.py',
+            RECURSIVE_DISCOVERY_TEST1)
+        avocado_recursive_discovery_test1.save()
+        avocado_recursive_discovery_test2 = script.TemporaryScript(
+            'recursive_discovery_test2.py',
+            RECURSIVE_DISCOVERY_TEST2)
+        avocado_recursive_discovery_test2.save()
+
+        sys.path.append(os.path.dirname(avocado_recursive_discovery_test1.path))
+        tests = safeloader.find_avocado_tests(avocado_recursive_discovery_test2.path)[0]
+        expected = {'ThirdChild': [('test_third_child', {}),
+                                   ('test_second_child', {}),
+                                   ('test_first_child', {}),
+                                   ('test_basic', {})]}
+        self.assertEqual(expected, tests)
+
+
+class AvocadoModule(unittest.TestCase):
+
+    def setUp(self):
+        self.path = os.path.abspath(os.path.dirname(get_this_file()))
+        self.module = safeloader.AvocadoModule(self.path)
+
+    def test_add_imported_empty(self):
+        self.assertEqual(self.module.imported_objects, {})
+
+    def test_add_imported_object_from_module(self):
+        import_stm = ast.ImportFrom(module='foo', names=[ast.Name(name='bar',
+                                                                  asname=None)])
+        self.module.add_imported_object(import_stm)
+        self.assertEqual(self.module.imported_objects['bar'],
+                         os.path.join(self.path, 'foo', 'bar'))
+
+    def test_add_imported_object_from_module_asname(self):
+        import_stm = ast.ImportFrom(module='foo', names=[ast.Name(name='bar',
+                                                                  asname='baz')])
+        self.module.add_imported_object(import_stm)
+        self.assertEqual(self.module.imported_objects['baz'],
+                         os.path.join(self.path, 'foo', 'bar'))
+
+    def test_is_not_avocado_test(self):
+        self.assertFalse(self.module.is_avocado_test(ast.ClassDef()))
+
+    def test_is_avocado_test(self):
+        passtest_path = os.path.join(BASEDIR, 'examples', 'tests', 'passtest.py')
+        passtest_module = safeloader.AvocadoModule(passtest_path)
+        classes = [klass for klass in passtest_module.iter_classes()]
+        # there's only one class and one *worthy* Test import in passtest.py
+        self.assertEqual(len(classes), 1)
+        self.assertEqual(len(passtest_module.test_imports), 1)
+        self.assertEqual(len(passtest_module.mod_imports), 0)
+        self.assertTrue(passtest_module.is_avocado_test(classes[0]))
 
 
 if __name__ == '__main__':

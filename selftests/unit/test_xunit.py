@@ -4,11 +4,7 @@ import shutil
 import tempfile
 import unittest
 from xml.dom import minidom
-
-try:
-    from io import BytesIO
-except:
-    from BytesIO import BytesIO
+from io import BytesIO
 
 try:
     from lxml import etree
@@ -20,6 +16,11 @@ from avocado import Test
 from avocado.core import job
 from avocado.core.result import Result
 from avocado.plugins import xunit
+
+from .. import setup_avocado_loggers
+
+
+setup_avocado_loggers()
 
 
 class ParseXMLError(Exception):
@@ -49,12 +50,11 @@ class xUnitSucceedTest(unittest.TestCase):
         self.job = job.Job(args)
         self.test_result = Result(FakeJob(args))
         self.test_result.tests_total = 1
+        self.test_result.logfile = ("/.../avocado/job-results/"
+                                    "job-2018-11-28T16.27-8fef221/job.log")
         self.test1 = SimpleTest(job=self.job, base_logdir=self.tmpdir)
         self.test1._Test__status = 'PASS'
-        self.test1.time_elapsed = 1.23
-        junit_xsd = os.path.join(os.path.dirname(__file__),
-                                 os.path.pardir, ".data", 'junit-4.xsd')
-        self.junit = os.path.abspath(junit_xsd)
+        self.test1.time_elapsed = 678.23689
 
     def tearDown(self):
         errs = []
@@ -84,19 +84,31 @@ class xUnitSucceedTest(unittest.TestCase):
         except Exception as details:
             raise ParseXMLError("Error parsing XML: '%s'.\nXML Contents:\n%s" % (details, xml))
         self.assertTrue(dom)
+
+        els = dom.getElementsByTagName('testsuite')
+        self.assertEqual(len(els), 1)
+        self.assertEqual(els[0].attributes['time'].value, '678.237')
+
         els = dom.getElementsByTagName('testcase')
         self.assertEqual(len(els), 1)
+        self.assertEqual(els[0].attributes['time'].value, '678.237')
 
-        with open(self.junit, 'r') as f:
+        junit_xsd = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                                 os.path.pardir, ".data",
+                                                 'jenkins-junit.xsd'))
+        with open(junit_xsd, 'r') as f:
             xmlschema = etree.XMLSchema(etree.parse(f))   # pylint: disable=I1101
         # pylint: disable=I1101
         self.assertTrue(xmlschema.validate(etree.parse(BytesIO(xml))),
-                        "Failed to validate against %s, content:\n%s" %
-                        (self.junit, xml))
+                        "Failed to validate against %s, content:\n%s\nerror log:\n%s" %
+                        (junit_xsd, xml, xmlschema.error_log))
 
     def test_max_test_log_size(self):
+        def get_system_out(out):
+            return out[out.find(b"<system-out>"):out.find(b"<system-out/>")]
         log = tempfile.NamedTemporaryFile(dir=self.tmpdir, delete=False)
         log_content = b"1234567890" * 100
+        log_content += b"this should not be present" + b"0987654321" * 100
         log.write(log_content)
         log_path = log.name
         log.close()
@@ -113,10 +125,25 @@ class xUnitSucceedTest(unittest.TestCase):
         xunit_result.render(self.test_result, self.job)
         with open(self.job.args.xunit_output, 'rb') as fp:
             limited = fp.read()
+        self.job.args.xunit_max_test_log_chars = 100000
+        xunit_result.render(self.test_result, self.job)
+        with open(self.job.args.xunit_output, 'rb') as fp:
+            limited_but_fits = fp.read()
         self.assertLess(len(limited), len(unlimited) - 500,
                         "Length of xunit limitted to 10 chars was greater "
                         "than (unlimited - 500). Unlimited output:\n%s\n\n"
                         "Limited output:\n%s" % (unlimited, limited))
+        unlimited_output = get_system_out(unlimited)
+        self.assertIn(log_content, unlimited_output)
+        self.assertEqual(unlimited_output, get_system_out(limited_but_fits))
+        self.assertIn(b"this should not be present", unlimited)
+        self.assertNotIn(b"this should not be present", limited)
+        self.assertIn(b"1234567890", unlimited)
+        self.assertNotIn(b"1234567890", limited)
+        self.assertIn(b"12345", limited)
+        self.assertIn(b"0987654321", unlimited)
+        self.assertNotIn(b"0987654321", limited)
+        self.assertIn(b"54321", limited)
 
 
 if __name__ == '__main__':

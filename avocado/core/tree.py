@@ -38,7 +38,7 @@ import copy
 import itertools
 import locale
 
-from six import string_types, iteritems
+from ..utils import astring
 
 
 class FilterSet(set):
@@ -59,7 +59,8 @@ class FilterSet(set):
                                               for item in items])
 
     def __str__(self):
-        return 'FilterSet([%s])' % ', '.join(["'%s'" % i for i in self])
+        return ('FilterSet([%s])'
+                % ', '.join(sorted(["'%s'" % i for i in self])))
 
 
 class TreeEnvironment(dict):
@@ -81,18 +82,36 @@ class TreeEnvironment(dict):
         return cpy
 
     def __str__(self):
+        """
+        String representation using __str__ on items to improve readability
+        """
+        return self.to_text(False)
+
+    def to_text(self, sort=False):
+        """
+        Human readable representation
+
+        :param sort: Sorted to provide stable output
+        :rtype: str
+        """
+        if sort:
+            sort_fn = sorted
+        else:
+            def sort_fn(x):
+                return x
+
         # Use __str__ instead of __repr__ to improve readability
         if self:
-            _values = ["%s: %s" % _ for _ in iteritems(self)]
+            _values = ["%s: %s" % _ for _ in sort_fn(self.items())]
             values = "{%s}" % ", ".join(_values)
             _origin = ["%s: %s" % (key, node.path)
-                       for key, node in iteritems(self.origin)]
+                       for key, node in sort_fn(self.origin.items())]
             origin = "{%s}" % ", ".join(_origin)
         else:
             values = "{}"
             origin = "{}"
-        return ",".join((values, origin, str(self.filter_only),
-                         str(self.filter_out)))
+        return ",".join((values, origin, astring.to_text(self.filter_only),
+                         astring.to_text(self.filter_out)))
 
 
 class TreeNodeEnvOnly(object):
@@ -130,7 +149,7 @@ class TreeNodeEnvOnly(object):
         return True
 
     def fingerprint(self):
-        return "%s%s" % (self.path, self.environment)
+        return "%s%s" % (self.path, self.environment.to_text(True))
 
     def get_environment(self):
         return self.environment
@@ -190,7 +209,7 @@ class TreeNode(object):
 
     def __eq__(self, other):
         """ Compares node to other node or string to name of this node """
-        if isinstance(other, string_types):  # Compare names
+        if isinstance(other, str):  # Compare names
             if self.name == other:
                 return True
         else:
@@ -209,20 +228,20 @@ class TreeNode(object):
             try:
                 values.append(hash(item))
             except TypeError:
-                values.append(hash(str(item)))
+                values.append(hash(astring.to_text(item)))
         children = []
         for item in self.children:
             try:
                 children.append(hash(item))
             except TypeError:
-                children.append(hash(str(item)))
+                children.append(hash(astring.to_text(item)))
         return hash((self.name, ) + tuple(values) + tuple(children))
 
     def fingerprint(self):
         """
         Reports string which represents the value of this node.
         """
-        return "%s%s" % (self.path, self.environment)
+        return "%s%s" % (self.path, self.environment.to_text(True))
 
     def add_child(self, node):
         """
@@ -274,7 +293,7 @@ class TreeNode(object):
         node = self.parent
         while True:
             if node is None:
-                raise StopIteration
+                return
             yield node
             node = node.parent
 
@@ -295,10 +314,10 @@ class TreeNode(object):
     def get_path(self, sep='/'):
         """ Get node path """
         if not self.parent:
-            return sep + str(self.name)
-        path = [str(self.name)]
+            return sep + astring.to_text(self.name)
+        path = [astring.to_text(self.name)]
         for node in self.iter_parents():
-            path.append(str(node.name))
+            path.append(astring.to_text(node.name))
         return sep.join(reversed(path))
 
     @property
@@ -311,7 +330,7 @@ class TreeNode(object):
         if self._environment is None:
             self._environment = (self.parent.environment.copy()
                                  if self.parent else TreeEnvironment())
-            for key, value in iteritems(self.value):
+            for key, value in self.value.items():
                 if isinstance(value, list):
                     if (key in self._environment and
                             isinstance(self._environment[key], list)):
@@ -402,7 +421,7 @@ def tree_view(root, verbose=None, use_utf8=None):
         Split value's lines and prepend empty prefix to 2nd+ lines
         :return: list of lines
         """
-        value = str(value)
+        value = astring.to_text(value)
         if '\n' not in value:
             return [prefix1 + prefix2 + value]
         value = value.splitlines()
@@ -425,13 +444,13 @@ def tree_view(root, verbose=None, use_utf8=None):
             right = charset['Right']
         out = [node.name]
         if verbose is not None and verbose >= 2 and node.is_leaf:
-            values = itertools.chain(iteritems(node.environment),
+            values = itertools.chain(iter(node.environment.items()),
                                      [("filter-only", _)
                                       for _ in node.environment.filter_only],
                                      [("filter-out", _)
                                       for _ in node.environment.filter_out])
         elif verbose in (1, 3):
-            values = itertools.chain(iteritems(node.value),
+            values = itertools.chain(iter(node.value.items()),
                                      [("filter-only", _)
                                       for _ in node.filters[0]],
                                      [("filter-out", _)
@@ -486,9 +505,9 @@ def tree_view(root, verbose=None, use_utf8=None):
         right = charset['Right']
     out = []
     if verbose is not None and verbose >= 2 and root.is_leaf:
-        values = iteritems(root.environment)
+        values = root.environment.items()
     elif verbose in (1, 3):
-        values = iteritems(root.value)
+        values = root.value.items()
     else:
         values = None
     if values:
@@ -504,4 +523,5 @@ def tree_view(root, verbose=None, use_utf8=None):
         out.append(right + lines[0])
         out.extend(' ' * len(down_right) + line for line in lines[1:])
     # When not on TTY we need to force the encoding
-    return '\n'.join(out).encode('utf-8' if use_utf8 else 'ascii')
+    return '\n'.join(out).encode('utf-8' if use_utf8 else 'ascii',
+                                 errors='xmlcharrefreplace')

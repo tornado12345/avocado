@@ -25,19 +25,30 @@ import re
 import logging
 import platform
 
+from enum import Enum
+
+from . import astring
 from . import process
-from . import genio
+from . import data_structures
 
 LOG = logging.getLogger('avocado.test')
 
-#: Config commented out or not set
-NOT_SET = 0
 
-#: Config compiled as loadable module (`=m`)
-MODULE = 1
+class ModuleConfig(Enum):
+    #: Config commented out or not set
+    NOT_SET = object()
+    #: Config compiled as loadable module (`=m`)
+    MODULE = object()
+    #: Config built-in to kernel (`=y`)
+    BUILTIN = object()
 
-#: Config built-in to kernel (`=y`)
-BUILTIN = 2
+
+#: Compatibility alias (to be removed) to :attr:`ModuleConfig.NOT_SET`
+NOT_SET = ModuleConfig.NOT_SET
+#: Compatibility alias (to be removed) to :attr:`ModuleConfig.MODULE`
+MODULE = ModuleConfig.MODULE
+#: Compatibility alias (to be removed) to :attr:`ModuleConfig.BUILTIN`
+BUILTIN = ModuleConfig.BUILTIN
 
 
 def load_module(module_name):
@@ -103,9 +114,10 @@ def loaded_module_info(module_name):
              dependent on, list of dictionary of param name and type
     :rtype: dict
     """
-    l_raw = process.system_output('/sbin/lsmod')
+    l_raw = process.system_output('/sbin/lsmod').decode('utf-8')
     modinfo_dic = parse_lsmod_for_module(l_raw, module_name)
-    output = process.system_output("/sbin/modinfo %s" % module_name)
+    output = process.system_output(
+        "/sbin/modinfo %s" % module_name).decode('utf-8')
     if output:
         param_list = []
         for line in output.splitlines():
@@ -152,7 +164,7 @@ def get_submodules(module_name):
         module_list = submodules
         for module in submodules:
             module_list += get_submodules(module)
-    return module_list
+    return data_structures.ordered_list_unique(module_list)
 
 
 def unload_module(module_name):
@@ -194,10 +206,7 @@ def module_is_loaded(module_name):
     :rtype: bool
     """
     module_name = module_name.replace('-', '_')
-    for line in genio.read_file("/proc/modules").splitlines():
-        if line.split(None, 1)[0] == module_name:
-            return True
-    return False
+    return module_name in get_loaded_modules()
 
 
 def get_loaded_modules():
@@ -205,8 +214,8 @@ def get_loaded_modules():
     Gets list of loaded modules.
     :return: List of loaded modules.
     """
-    lsmod_output = process.system_output('/sbin/lsmod').splitlines()[1:]
-    return [line.split(None, 1)[0] for line in lsmod_output]
+    with open('/proc/modules', 'rb') as proc_modules:
+        return [astring.to_text(_.split(b' ', 1)[0]) for _ in proc_modules]
 
 
 def check_kernel_config(config_name):
@@ -216,7 +225,7 @@ def check_kernel_config(config_name):
     :param config_name: Name of kernel config to search
     :type config_name: str
     :return: Config status in running kernel (NOT_SET, BUILTIN, MODULE)
-    :rtype: int
+    :rtype: :class:`ModuleConfig`
     """
 
     kernel_version = platform.uname()[2]
@@ -233,7 +242,19 @@ def check_kernel_config(config_name):
             if config == config_name:
                 option = line[1].strip()
                 if option == "m":
-                    return MODULE
+                    return ModuleConfig.MODULE
                 else:
-                    return BUILTIN
-    return NOT_SET
+                    return ModuleConfig.BUILTIN
+    return ModuleConfig.NOT_SET
+
+
+def get_modules_dir():
+    """
+    Return the modules dir for the running kernel version
+
+    :return: path of module directory
+    :rtype: String
+    """
+    kernel_version = platform.uname()[2]
+
+    return '/lib/modules/%s/kernel' % kernel_version

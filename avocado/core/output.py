@@ -20,18 +20,11 @@ import logging
 import os
 import re
 import sys
-
-from six import string_types, iterkeys
+import traceback
 
 from . import exit_codes
 from ..utils import path as utils_path
 from .settings import settings
-
-if hasattr(logging, 'NullHandler'):
-    NULL_HANDLER = logging.NullHandler
-else:
-    import logutils
-    NULL_HANDLER = logutils.NullHandler
 
 
 #: Pre-defined Avocado human UI logger
@@ -48,10 +41,6 @@ BUILTIN_STREAMS = {'app': 'application output',
 #: Groups of builtin streams
 BUILTIN_STREAM_SETS = {'all': 'all builtin streams',
                        'none': 'disables regular output (leaving only errors enabled)'}
-#: Transparently handles colored terminal, when one is used
-TERM_SUPPORT = None
-#: Allows modifying the sys.stdout/sys.stderr
-STD_OUTPUT = None
 
 
 class TermSupport(object):
@@ -206,6 +195,7 @@ class TermSupport(object):
         return self.MOVE_BACK + self.WARN + 'WARN' + self.ENDC
 
 
+#: Transparently handles colored terminal, when one is used
 TERM_SUPPORT = TermSupport()
 
 
@@ -238,11 +228,9 @@ class _StdOutputFile(object):
 
     def close(self):
         """ File-object methods """
-        pass
 
     def flush(self):
         """ File-object methods """
-        pass
 
     def isatty(self):
         """ File-object methods """
@@ -250,11 +238,9 @@ class _StdOutputFile(object):
 
     def seek(self):
         """ File-object methods """
-        pass
 
     def tell(self):
         """ File-object methods """
-        pass
 
     def getvalue(self):
         """
@@ -299,8 +285,8 @@ class StdOutput(object):
         # indiscriminately.  By handling them here, we can be sure
         # that the failure was due to stdout or stderr not being
         # connected to an open PIPE.
-        except IOError as e:
-            if not e.errno == errno.EPIPE:
+        except IOError as detail:
+            if not detail.errno == errno.EPIPE:
                 raise
 
     def fake_outputs(self):
@@ -321,7 +307,14 @@ class StdOutput(object):
         """
         Enable paginator
         """
-        self.stdout = self.stderr = Paginator()
+        try:
+            paginator = Paginator()
+        except RuntimeError as details:
+            # Paginator not available
+            logging.getLogger('avocado.app.debug').error("Failed to enable "
+                                                         "paginator: %s", details)
+            return
+        self.stdout = self.stderr = paginator
 
     def enable_stderr(self):
         """
@@ -342,6 +335,7 @@ class StdOutput(object):
             paginator.close()
 
 
+#: Allows modifying the sys.stdout/sys.stderr
 STD_OUTPUT = StdOutput()
 
 
@@ -437,7 +431,7 @@ def reconfigure(args):
             disable_log_handler(LOG_UI.getChild("debug"))
 
     # Add custom loggers
-    for name in [_ for _ in enabled if _ not in iterkeys(BUILTIN_STREAMS)]:
+    for name in [_ for _ in enabled if _ not in BUILTIN_STREAMS]:
         stream_level = re.split(r'(?<!\\):', name, maxsplit=1)
         name = stream_level[0]
         if len(stream_level) == 1:
@@ -520,11 +514,6 @@ class MemStreamHandler(logging.StreamHandler):
         """
         This is in-mem object, it does not require flushing
         """
-        pass
-
-
-class PagerNotFoundError(Exception):
-    pass
 
 
 class Paginator(object):
@@ -536,17 +525,14 @@ class Paginator(object):
     """
 
     def __init__(self):
-        try:
-            paginator = "%s -FRX" % utils_path.find_command('less')
-        except utils_path.CmdNotFoundError:
-            paginator = None
+        paginator = os.environ.get('PAGER')
+        if not paginator:
+            try:
+                paginator = "%s -FRX" % utils_path.find_command('less')
+            except utils_path.CmdNotFoundError as details:
+                raise RuntimeError("Unable to enable pagination: %s" % details)
 
-        paginator = os.environ.get('PAGER', paginator)
-
-        if paginator is None:
-            self.pipe = sys.stdout
-        else:
-            self.pipe = os.popen(paginator, 'w')
+        self.pipe = os.popen(paginator, 'w')
 
     def __del__(self):
         self.close()
@@ -581,11 +567,11 @@ def add_log_handler(logger, klass=logging.StreamHandler, stream=sys.stdout,
     :param level: Log level (defaults to `INFO``)
     :param fmt: Logging format (defaults to ``%(name)s: %(message)s``)
     """
-    if isinstance(logger, string_types):
+    if isinstance(logger, str):
         logger = logging.getLogger(logger)
     handler = klass(stream)
     handler.setLevel(level)
-    if isinstance(fmt, string_types):
+    if isinstance(fmt, str):
         fmt = logging.Formatter(fmt=fmt)
     handler.setFormatter(fmt)
     logger.addHandler(handler)
@@ -594,12 +580,12 @@ def add_log_handler(logger, klass=logging.StreamHandler, stream=sys.stdout,
 
 
 def disable_log_handler(logger):
-    if isinstance(logger, string_types):
+    if isinstance(logger, str):
         logger = logging.getLogger(logger)
     # Handlers might be reused elsewhere, can't delete them
     while logger.handlers:
         logger.handlers.pop()
-    logger.handlers.append(NULL_HANDLER())
+    logger.handlers.append(logging.NullHandler())
     logger.propagate = False
 
 
@@ -704,12 +690,16 @@ def log_plugin_failures(failures):
                      :class:`avocado.core.dispatcher.Dispatcher`
                      attribute `load_failures`
     """
-    msg_fmt = 'Failed to load plugin from module "%s": %s'
+    msg_fmt = 'Failed to load plugin from module "%s": %s :\n%s'
     silenced = settings.get_value('plugins',
                                   'skip_broken_plugin_notification',
                                   list, [])
     for failure in failures:
         if failure[0].module_name in silenced:
             continue
+        if hasattr(failure[1], "__traceback__"):
+            str_tb = ''.join(traceback.format_tb(failure[1].__traceback__))
+        else:
+            str_tb = "Traceback not available"
         LOG_UI.error(msg_fmt, failure[0].module_name,
-                     failure[1].__repr__())
+                     failure[1].__repr__(), str_tb)

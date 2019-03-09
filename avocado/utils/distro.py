@@ -19,7 +19,6 @@ it's running under.
 
 import os
 import re
-import platform
 
 
 __all__ = ['LinuxDistro',
@@ -261,41 +260,6 @@ class Probe(object):
         return distro
 
 
-class StdLibProbe(Probe):
-
-    """
-    Probe that uses the Python standard library builtin detection
-
-    This Probe has a lower score on purpose, serving as a fallback
-    if no explicit (and hopefully more accurate) probe exists.
-    """
-
-    def get_distro(self):
-        name = None
-        version = UNKNOWN_DISTRO_VERSION
-        release = UNKNOWN_DISTRO_RELEASE
-
-        d_name, d_version_release, _ = platform.dist()
-        if d_name:
-            name = d_name
-
-        if '.' in d_version_release:
-            d_version, d_release = d_version_release.split('.', 1)
-            version = d_version
-            release = d_release
-        else:
-            version = d_version_release
-
-        arch = os.uname()[4]
-
-        if name is not None:
-            distro = LinuxDistro(name, version, release, arch)
-        else:
-            distro = UNKNOWN_DISTRO
-
-        return distro
-
-
 class RedHatProbe(Probe):
 
     """
@@ -331,13 +295,40 @@ class FedoraProbe(RedHatProbe):
     CHECK_VERSION_REGEX = re.compile(r'Fedora release (\d{1,2}).*')
 
 
+class AmazonLinuxProbe(Probe):
+
+    """
+    Probe for Amazon Linux systems
+    """
+
+    CHECK_FILE = '/etc/os-release'
+    CHECK_FILE_CONTAINS = 'Amazon Linux'
+    CHECK_FILE_DISTRO_NAME = 'amzn'
+    CHECK_VERSION_REGEX = re.compile(r'.*VERSION=\"(\d+)\.(\d+)\".*',
+                                     re.MULTILINE | re.DOTALL)
+
+
 class DebianProbe(Probe):
 
     """
     Simple probe with file checks for Debian systems
     """
-    CHECK_FILE = '/etc/debian-version'
+    CHECK_FILE = '/etc/debian_version'
     CHECK_FILE_DISTRO_NAME = 'debian'
+    CHECK_VERSION_REGEX = re.compile(r'(\d+)\.(\d+)')
+
+
+class UbuntuProbe(Probe):
+
+    """
+    Simple probe for Ubuntu systems in general
+    """
+
+    CHECK_FILE = '/etc/os-release'
+    CHECK_FILE_CONTAINS = 'ubuntu'
+    CHECK_FILE_DISTRO_NAME = 'Ubuntu'
+    CHECK_VERSION_REGEX = re.compile(r'.*VERSION_ID=\"(\d+)\.(\d+)\".*',
+                                     re.MULTILINE | re.DOTALL)
 
 
 class SUSEProbe(Probe):
@@ -398,9 +389,10 @@ def register_probe(probe_class):
 register_probe(RedHatProbe)
 register_probe(CentosProbe)
 register_probe(FedoraProbe)
+register_probe(AmazonLinuxProbe)
 register_probe(DebianProbe)
 register_probe(SUSEProbe)
-register_probe(StdLibProbe)
+register_probe(UbuntuProbe)
 
 
 def detect():

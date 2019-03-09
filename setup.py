@@ -30,6 +30,8 @@ def get_long_description():
     return req_contents
 
 
+INSTALL_REQUIREMENTS = ['requests', 'stevedore>=0.14', 'setuptools']
+
 if __name__ == '__main__':
     # Force "make develop" inside the "readthedocs.org" environment
     if os.environ.get("READTHEDOCS") and "install" in sys.argv:
@@ -50,8 +52,6 @@ if __name__ == '__main__':
               "Operating System :: POSIX",
               "Topic :: Software Development :: Quality Assurance",
               "Topic :: Software Development :: Testing",
-              "Programming Language :: Python :: 2",
-              "Programming Language :: Python :: 2.7",
               "Programming Language :: Python :: 3",
               "Programming Language :: Python :: 3.4",
               "Programming Language :: Python :: 3.5",
@@ -107,5 +107,5 @@ if __name__ == '__main__':
               },
           zip_safe=False,
           test_suite='selftests',
-          python_requires='>=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*',
-          install_requires=['stevedore>=0.14', 'six>=1.10.0', 'setuptools'])
+          python_requires='>=3.4',
+          install_requires=INSTALL_REQUIREMENTS)
