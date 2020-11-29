@@ -1,15 +1,12 @@
 import os
 import tempfile
-import shutil
 import unittest
 
 from avocado.core import exit_codes
-from avocado.utils import process
-from avocado.utils import script
 from avocado.utils import path as utils_path
+from avocado.utils import process, script
 
-from .. import AVOCADO, BASEDIR
-
+from .. import AVOCADO, BASEDIR, TestCaseTmpDir
 
 SCRIPT_CONTENT = """#!/bin/bash
 touch %s
@@ -29,10 +26,10 @@ def missing_binary(binary):
         return True
 
 
-class WrapperTest(unittest.TestCase):
+class WrapperTest(TestCaseTmpDir):
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
+        super(WrapperTest, self).setUp()
         self.tmpfile = tempfile.mktemp()
         self.script = script.TemporaryScript(
             'success.sh',
@@ -49,9 +46,9 @@ class WrapperTest(unittest.TestCase):
                      "C compiler is required by the underlying datadir.py test")
     def test_global_wrapper(self):
         os.chdir(BASEDIR)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off --wrapper %s '
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo --wrapper %s '
                     'examples/tests/datadir.py'
-                    % (AVOCADO, self.tmpdir, self.script.path))
+                    % (AVOCADO, self.tmpdir.name, self.script.path))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -66,9 +63,9 @@ class WrapperTest(unittest.TestCase):
                      "C compiler is required by the underlying datadir.py test")
     def test_process_wrapper(self):
         os.chdir(BASEDIR)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
                     '--wrapper %s:*/datadir examples/tests/datadir.py'
-                    % (AVOCADO, self.tmpdir, self.script.path))
+                    % (AVOCADO, self.tmpdir.name, self.script.path))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -83,9 +80,9 @@ class WrapperTest(unittest.TestCase):
                      "C compiler is required by the underlying datadir.py test")
     def test_both_wrappers(self):
         os.chdir(BASEDIR)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off --wrapper %s '
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo --wrapper %s '
                     '--wrapper %s:*/datadir examples/tests/datadir.py'
-                    % (AVOCADO, self.tmpdir, self.dummy.path,
+                    % (AVOCADO, self.tmpdir.name, self.dummy.path,
                        self.script.path))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
@@ -98,13 +95,13 @@ class WrapperTest(unittest.TestCase):
                         (self.tmpfile, cmd_line, result.stdout))
 
     def tearDown(self):
+        super(WrapperTest, self).tearDown()
         self.script.remove()
         self.dummy.remove()
         try:
             os.remove(self.tmpfile)
         except OSError:
             pass
-        shutil.rmtree(self.tmpdir)
 
 
 if __name__ == '__main__':

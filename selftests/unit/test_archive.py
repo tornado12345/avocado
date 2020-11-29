@@ -1,23 +1,21 @@
-import unittest
-import tempfile
 import os
-import shutil
-import sys
 import random
+import sys
+import tempfile
+import unittest
 
-from avocado.utils import archive
-from avocado.utils import crypto
-from avocado.utils import data_factory
+from avocado.utils import archive, crypto, data_factory
 
-from .. import BASEDIR
+from .. import BASEDIR, temp_dir_prefix
 
 
 class ArchiveTest(unittest.TestCase):
 
     def setUp(self):
-        self.basedir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.compressdir = tempfile.mkdtemp(dir=self.basedir)
-        self.decompressdir = tempfile.mkdtemp(dir=self.basedir)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.basedir = tempfile.TemporaryDirectory(prefix=prefix)
+        self.compressdir = tempfile.mkdtemp(dir=self.basedir.name)
+        self.decompressdir = tempfile.mkdtemp(dir=self.basedir.name)
         self.sys_random = random.SystemRandom()
 
     def compress_and_check_dir(self, extension):
@@ -49,12 +47,12 @@ class ArchiveTest(unittest.TestCase):
 
     def compress_and_check_file(self, extension):
         str_length = self.sys_random.randint(30, 50)
-        fd, filename = tempfile.mkstemp(dir=self.basedir, text=True)
+        fd, filename = tempfile.mkstemp(dir=self.basedir.name, text=True)
         with os.fdopen(fd, 'w') as f:
             f.write(data_factory.generate_random_string(str_length))
         original_hash = crypto.hash_file(filename)
         dstfile = filename + extension
-        archive_filename = os.path.join(self.basedir, dstfile)
+        archive_filename = os.path.join(self.basedir.name, dstfile)
         archive.compress(archive_filename, filename)
         ret = archive.uncompress(archive_filename, self.decompressdir)
         self.assertEqual(ret, os.path.basename(filename))
@@ -179,9 +177,41 @@ class ArchiveTest(unittest.TestCase):
         with open(ret, 'rb') as decompressed:
             self.assertEqual(decompressed.read(), b'avocado\n')
 
+    def test_is_lzma_file(self):
+        xz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.xz')
+        self.assertTrue(archive.is_lzma_file(xz_path))
+
+    def test_null_is_not_lzma_file(self):
+        self.assertFalse(archive.is_lzma_file(os.devnull))
+
+    def test_lzma_uncompress_to_dir(self):
+        xz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.xz')
+        ret = archive.lzma_uncompress(xz_path, self.decompressdir)
+        self.assertEqual(ret, os.path.join(self.decompressdir, 'avocado'))
+
+    def test_lzma_uncompress_to_file(self):
+        xz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.xz')
+        filename = os.path.join(self.decompressdir, 'other')
+        ret = archive.lzma_uncompress(xz_path, filename)
+        self.assertEqual(ret, filename)
+
+    def test_lzma_is_archive(self):
+        xz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.xz')
+        self.assertTrue(archive.is_archive(xz_path))
+
+    def test_null_lzma_is_not_archive(self):
+        self.assertFalse(archive.is_archive(os.devnull))
+
+    def test_uncompress_lzma(self):
+        xz_path = os.path.join(BASEDIR, 'selftests', '.data', 'avocado.xz')
+        ret = archive.uncompress(xz_path, self.decompressdir)
+        self.assertEqual(ret, os.path.join(self.decompressdir, 'avocado'))
+        with open(ret, 'rb') as decompressed:
+            self.assertEqual(decompressed.read(), b'avocado\n')
+
     def tearDown(self):
         try:
-            shutil.rmtree(self.basedir)
+            self.basedir.cleanup()
         except OSError:
             pass
 

@@ -2,14 +2,12 @@
 Verifies the avocado.utils.iso9660 functionality
 """
 import os
-import shutil
 import tempfile
 import unittest.mock
 
 from avocado.utils import iso9660, process
 
-from .. import setup_avocado_loggers
-
+from .. import setup_avocado_loggers, temp_dir_prefix
 
 setup_avocado_loggers()
 
@@ -44,7 +42,7 @@ class Capabilities(unittest.TestCase):
                                           ['non-existing', 'capabilities']))
 
 
-class BaseIso9660(object):
+class BaseIso9660:
 
     """
     Base class defining setup and tests for shared Iso9660 functionality
@@ -55,15 +53,19 @@ class BaseIso9660(object):
                                                      os.path.pardir, ".data",
                                                      "sample.iso"))
         self.iso = None
-        self.tmpdir = tempfile.mkdtemp(prefix="avocado_" + __name__)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
 
+    @unittest.skipIf(os.uname()[4] == 's390x',
+                     ('Endianess issues on pycdlib, see '
+                      'https://github.com/clalancette/pycdlib/issues/39'))
     def test_basic_workflow(self):
         """
         Check the basic Iso9660 workflow
         """
         self.assertEqual(self.iso.read("file"),
                          b"file content\n")
-        dst = os.path.join(self.tmpdir, "file")
+        dst = os.path.join(self.tmpdir.name, "file")
         self.iso.copy(os.path.join("Dir", "in_dir_file"), dst)
         self.assertEqual(open(dst).read(), "content of in-dir-file\n")
         self.iso.close()
@@ -71,6 +73,9 @@ class BaseIso9660(object):
 
     @unittest.skipIf(not process.can_sudo("mount"),
                      "This test requires mount to run under sudo or root")
+    @unittest.skipIf(os.getenv('TRAVIS') and
+                     os.getenv('TRAVIS_CPU_ARCH') in ['arm64', 'ppc64le', 's390x'],
+                     'TRAVIS Environment is unsuitable for these tests')
     def test_mnt_dir_workflow(self):
         """
         Check the mnt_dir functionality
@@ -90,7 +95,7 @@ class BaseIso9660(object):
     def tearDown(self):
         if self.iso is not None:
             self.iso.close()
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
 
 class IsoInfo(BaseIso9660, unittest.TestCase):
@@ -127,6 +132,9 @@ class IsoMount(BaseIso9660, unittest.TestCase):
 
     @unittest.skipIf(not process.can_sudo("mount"),
                      "This test requires sudo or root")
+    @unittest.skipIf(os.getenv('TRAVIS') and
+                     os.getenv('TRAVIS_CPU_ARCH') in ['arm64', 'ppc64le', 's390x'],
+                     'TRAVIS Environment is unsuitable for these tests')
     def setUp(self):
         super(IsoMount, self).setUp()
         self.iso = iso9660.Iso9660Mount(self.iso_path)
@@ -144,7 +152,7 @@ class PyCDLib(BaseIso9660, unittest.TestCase):
         self.iso = iso9660.ISO9660PyCDLib(self.iso_path)
 
     def test_create_write(self):
-        new_iso_path = os.path.join(self.tmpdir, 'new.iso')
+        new_iso_path = os.path.join(self.tmpdir.name, 'new.iso')
         new_iso = iso9660.ISO9660PyCDLib(new_iso_path)
         new_iso.create()
         content = b"AVOCADO"

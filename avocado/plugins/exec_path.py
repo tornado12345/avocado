@@ -17,6 +17,7 @@ Libexec PATHs modifier
 import os
 
 from pkg_resources import resource_filename
+
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
 
@@ -30,11 +31,11 @@ class ExecPath(CLICmd):
     name = 'exec-path'
     description = 'Returns path to avocado bash libraries and exits.'
 
-    def run(self, args):
+    def run(self, config):
         """
         Print libexec path and finish
 
-        :param args: Command line args received from the run subparser.
+        :param config: job configuration
         """
         system_wide = '/usr/libexec/avocado'
         if os.path.isdir(system_wide):

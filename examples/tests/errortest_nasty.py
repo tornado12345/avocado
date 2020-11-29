@@ -1,14 +1,11 @@
-#!/usr/bin/env python
-
 from avocado import Test
-from avocado import main
 
 
 class NastyException(Exception):
 
     """ Please never use something like this!!! """
 
-    def __init__(self, msg):
+    def __init__(self, msg):  # pylint: disable=W0231
         self.msg = msg
 
     def __str__(self):
@@ -28,7 +25,3 @@ class FailTest(Test):
         Avocado should report this as TestError.
         """
         raise NastyException(u"Nasty-string-like-exception\u017e")
-
-
-if __name__ == "__main__":
-    main()

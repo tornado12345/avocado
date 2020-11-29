@@ -1,17 +1,18 @@
 import os
-import shutil
 import tempfile
 import unittest
 
-from avocado.utils.filelock import AlreadyLocked
-from avocado.utils.filelock import FileLock
+from avocado.utils.filelock import AlreadyLocked, FileLock
+
+from .. import temp_dir_prefix
 
 
 class TestFileLock(unittest.TestCase):
 
     def setUp(self):
-        self.basedir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.filename = os.path.join(self.basedir, 'file.img')
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
+        self.filename = os.path.join(self.tmpdir.name, 'file.img')
         self.content = 'Foo bar'
         with open(self.filename, 'w') as f:
             f.write(self.content)
@@ -34,7 +35,7 @@ class TestFileLock(unittest.TestCase):
         self.assertRaises(AlreadyLocked, self._readfile)
 
     def tearDown(self):
-        shutil.rmtree(self.basedir)
+        self.tmpdir.cleanup()
 
 
 if __name__ == "__main__":

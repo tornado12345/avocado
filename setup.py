@@ -15,9 +15,11 @@
 
 import os
 import sys
+
+from setuptools import find_packages, setup
+
 # pylint: disable=E0611
 
-from setuptools import setup, find_packages
 
 BASE_PATH = os.path.dirname(__file__)
 with open(os.path.join(BASE_PATH, 'VERSION'), 'r') as version_file:
@@ -25,12 +27,10 @@ with open(os.path.join(BASE_PATH, 'VERSION'), 'r') as version_file:
 
 
 def get_long_description():
-    with open(os.path.join(BASE_PATH, 'README.rst'), 'r') as req:
-        req_contents = req.read()
-    return req_contents
+    with open(os.path.join(BASE_PATH, 'README.rst'), 'r') as readme:
+        readme_contents = readme.read()
+    return readme_contents
 
-
-INSTALL_REQUIREMENTS = ['requests', 'stevedore>=0.14', 'setuptools']
 
 if __name__ == '__main__':
     # Force "make develop" inside the "readthedocs.org" environment
@@ -53,43 +53,70 @@ if __name__ == '__main__':
               "Topic :: Software Development :: Quality Assurance",
               "Topic :: Software Development :: Testing",
               "Programming Language :: Python :: 3",
-              "Programming Language :: Python :: 3.4",
               "Programming Language :: Python :: 3.5",
               "Programming Language :: Python :: 3.6",
+              "Programming Language :: Python :: 3.7",
+              "Programming Language :: Python :: 3.8",
               ],
           packages=find_packages(exclude=('selftests*',)),
           include_package_data=True,
-          scripts=['scripts/avocado',
-                   'scripts/avocado-rest-client'],
           entry_points={
+              'console_scripts': [
+                  'avocado = avocado.core.main:main',
+                  'avocado-runner = avocado.core.nrunner:main',
+                  'avocado-runner-noop = avocado.core.nrunner:main',
+                  'avocado-runner-exec = avocado.core.nrunner:main',
+                  'avocado-runner-exec-test = avocado.core.nrunner:main',
+                  'avocado-runner-python-unittest = avocado.core.nrunner:main',
+                  'avocado-runner-avocado-instrumented = avocado.core.nrunner_avocado_instrumented:main',
+                  'avocado-runner-tap = avocado.core.nrunner_tap:main',
+                  'avocado-software-manager = avocado.utils.software_manager.main:main',
+                  ],
+              "avocado.plugins.init": [
+                  "xunit = avocado.plugins.xunit:XUnitInit",
+                  "jsonresult = avocado.plugins.jsonresult:JSONInit",
+                  "sysinfo = avocado.plugins.sysinfo:SysinfoInit",
+                  "tap = avocado.plugins.tap:TAPInit",
+                  "jobscripts = avocado.plugins.jobscripts:JobScriptsInit",
+                  "json_variants = avocado.plugins.json_variants:JsonVariantsInit",
+                  "run = avocado.plugins.run:RunInit",
+                  "podman = avocado.plugins.spawners.podman:PodmanSpawnerInit",
+                  "nrunner = avocado.plugins.runner_nrunner:RunnerInit",
+                  "testlogs = avocado.plugins.testlogs:TestLogsInit",
+              ],
               'avocado.plugins.cli': [
-                  'envkeep = avocado.plugins.envkeep:EnvKeep',
-                  'gdb = avocado.plugins.gdb:GDB',
                   'wrapper = avocado.plugins.wrapper:Wrapper',
                   'xunit = avocado.plugins.xunit:XUnitCLI',
                   'json = avocado.plugins.jsonresult:JSONCLI',
                   'journal = avocado.plugins.journal:Journal',
-                  'replay = avocado.plugins.replay:Replay',
+                  'replay_legacy = avocado.plugins.legacy.replay:Replay',
                   'tap = avocado.plugins.tap:TAP',
                   'zip_archive = avocado.plugins.archive:ArchiveCLI',
                   'json_variants = avocado.plugins.json_variants:JsonVariantsCLI',
+                  'nrunner = avocado.plugins.runner_nrunner:RunnerCLI',
+                  'podman = avocado.plugins.spawners.podman:PodmanCLI',
                   ],
               'avocado.plugins.cli.cmd': [
                   'config = avocado.plugins.config:Config',
                   'distro = avocado.plugins.distro:Distro',
                   'exec-path = avocado.plugins.exec_path:ExecPath',
-                  'multiplex = avocado.plugins.multiplex:Multiplex',
                   'variants = avocado.plugins.variants:Variants',
                   'list = avocado.plugins.list:List',
                   'run = avocado.plugins.run:Run',
                   'sysinfo = avocado.plugins.sysinfo:SysInfo',
                   'plugins = avocado.plugins.plugins:Plugins',
                   'diff = avocado.plugins.diff:Diff',
+                  'vmimage = avocado.plugins.vmimage:VMimage',
+                  'assets = avocado.plugins.assets:Assets',
+                  'jobs = avocado.plugins.jobs:Jobs',
+                  'replay = avocado.plugins.replay:Replay',
                   ],
               'avocado.plugins.job.prepost': [
                   'jobscripts = avocado.plugins.jobscripts:JobScripts',
                   'teststmpdir = avocado.plugins.teststmpdir:TestsTmpDir',
                   'human = avocado.plugins.human:HumanJob',
+                  'merge_files = avocado.plugins.expected_files_merge:FilesMerge',
+                  'testlogs = avocado.plugins.testlogs:TestLogs',
                   ],
               'avocado.plugins.result': [
                   'xunit = avocado.plugins.xunit:XUnitResult',
@@ -100,12 +127,34 @@ if __name__ == '__main__':
                   'human = avocado.plugins.human:Human',
                   'tap = avocado.plugins.tap:TAPResult',
                   'journal = avocado.plugins.journal:JournalResult',
+                  'fetchasset = avocado.plugins.assets:FetchAssetJob',
+                  'sysinfo = avocado.plugins.sysinfo:SysInfoJob',
                   ],
               'avocado.plugins.varianter': [
                   'json_variants = avocado.plugins.json_variants:JsonVariants',
-                 ],
+                  'dict_variants = avocado.plugins.dict_variants:DictVariants',
+                  ],
+              'avocado.plugins.resolver': [
+                  'exec-test = avocado.plugins.resolvers:ExecTestResolver',
+                  'python-unittest = avocado.plugins.resolvers:PythonUnittestResolver',
+                  'avocado-instrumented = avocado.plugins.resolvers:AvocadoInstrumentedResolver',
+                  'tap = avocado.plugins.resolvers:TapResolver',
+                  ],
+              'avocado.plugins.runner': [
+                  'runner = avocado.plugins.runner:TestRunner',
+                  'nrunner = avocado.plugins.runner_nrunner:Runner',
+                  ],
+              'avocado.plugins.runnable.runner': [
+                  ('avocado-instrumented = avocado.core.'
+                   'nrunner_avocado_instrumented:AvocadoInstrumentedTestRunner'),
+                  'tap = avocado.core.nrunner_tap:TAPRunner',
+                  ],
+              'avocado.plugins.spawner': [
+                  'process = avocado.plugins.spawners.process:ProcessSpawner',
+                  'podman = avocado.plugins.spawners.podman:PodmanSpawner',
+                  ],
               },
           zip_safe=False,
           test_suite='selftests',
           python_requires='>=3.4',
-          install_requires=INSTALL_REQUIREMENTS)
+          install_requires=['setuptools'])

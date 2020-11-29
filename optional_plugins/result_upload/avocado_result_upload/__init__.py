@@ -17,10 +17,9 @@ Avocado Plugin to propagate Job results to remote host
 """
 
 from avocado.core.plugin_interfaces import CLI, Result
-
 from avocado.core.settings import settings
-from avocado.utils import process
 from avocado.utils import path as utils_path
+from avocado.utils import process
 
 
 class ResultUpload(Result):
@@ -41,13 +40,8 @@ class ResultUpload(Result):
             return  # Don't create results on unfinished jobs
 
         """
-        self.upload_url = None
-        if getattr(job.args, 'result_upload_url', None) is not None:
-            self.upload_url = job.args.result_upload_url
-
-        self.upload_cmd = None
-        if getattr(job.args, 'result_upload_cmd', None) is not None:
-            self.upload_cmd = job.args.result_upload_cmd
+        self.upload_url = job.config.get('plugins.result_upload.url')  # pylint: disable=W0201
+        self.upload_cmd = job.config.get('plugins.result_upload.cmd')  # pylint: disable=W0201
 
         if self.upload_url is None:
             return
@@ -75,9 +69,13 @@ class ResultUploadCLI(CLI):
 
         msg = 'result-upload options'
         parser = run_subcommand_parser.add_argument_group(msg)
-        parser.add_argument('--result-upload-url',
-                            dest='result_upload_url', default=None,
-                            help='Specify the result upload url')
+        help_msg = 'Specify the result upload url'
+        settings.register_option(section='plugins.result_upload',
+                                 key='url',
+                                 default=None,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--result-upload-url')
 
         try:
             rsync_bin = utils_path.find_command('rsync')
@@ -88,23 +86,13 @@ class ResultUploadCLI(CLI):
         except utils_path.CmdNotFoundError:
             def_upload_cmd = None
 
-        parser.add_argument('--result-upload-cmd',
-                            dest='result_upload_cmd', default=def_upload_cmd,
-                            help='Specify the command to upload results')
+        help_msg = 'Specify the command to upload results'
+        settings.register_option(section='plugins.result_upload',
+                                 key='cmd',
+                                 help_msg=help_msg,
+                                 default=def_upload_cmd,
+                                 parser=parser,
+                                 long_arg='--result-upload-cmd')
 
-    def run(self, args):
-        url = getattr(args, 'result_upload_url', None)
-        if url is None:
-            url = settings.get_value('plugins.result_upload',
-                                     'url',
-                                     default=None)
-            if url is not None:
-                args.result_upload_url = url
-
-        cmd = getattr(args, 'result_upload_cmd', None)
-        if cmd is None:
-            cmd = settings.get_value('plugins.result_upload',
-                                     'command',
-                                     default=None)
-            if cmd is not None:
-                args.result_upload_cmd = cmd
+    def run(self, config):
+        pass

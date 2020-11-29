@@ -20,7 +20,6 @@ it's running under.
 import os
 import re
 
-
 __all__ = ['LinuxDistro',
            'UNKNOWN_DISTRO_NAME',
            'UNKNOWN_DISTRO_VERSION',
@@ -32,7 +31,7 @@ __all__ = ['LinuxDistro',
 
 
 # pylint: disable=R0903
-class LinuxDistro(object):
+class LinuxDistro:
 
     """
     Simple collection of information for a Linux Distribution
@@ -87,7 +86,7 @@ UNKNOWN_DISTRO = LinuxDistro(UNKNOWN_DISTRO_NAME,
                              UNKNOWN_DISTRO_ARCH)
 
 
-class Probe(object):
+class Probe:
 
     """
     Probes the machine and does it best to confirm it's the right distro
@@ -268,8 +267,8 @@ class RedHatProbe(Probe):
     CHECK_FILE = '/etc/redhat-release'
     CHECK_FILE_CONTAINS = 'Red Hat Enterprise Linux'
     CHECK_FILE_DISTRO_NAME = 'rhel'
-    CHECK_VERSION_REGEX = re.compile(
-        r'Red Hat Enterprise Linux \w+ release (\d{1,2})\.(\d{1,2}).*')
+    CHECK_VERSION_REGEX = re.compile(r'Red Hat Enterprise Linux\s+\w*\s*release\s+'
+                                     r'(\d{1,2})\.(\d{1,2}).*')
 
 
 class CentosProbe(RedHatProbe):
@@ -374,6 +373,18 @@ class SUSEProbe(Probe):
         return distro
 
 
+class OpenEulerProbe(Probe):
+
+    """
+    Simple probe for openEuler systems in general
+    """
+
+    CHECK_FILE = '/etc/openEuler-release'
+    CHECK_FILE_CONTAINS = 'openEuler release'
+    CHECK_FILE_DISTRO_NAME = 'openEuler'
+    CHECK_VERSION_REGEX = re.compile(r'openEuler release (\d+)\.(\d+).*')
+
+
 #: the complete list of probes that have been registered
 REGISTERED_PROBES = []
 
@@ -393,6 +404,7 @@ register_probe(AmazonLinuxProbe)
 register_probe(DebianProbe)
 register_probe(SUSEProbe)
 register_probe(UbuntuProbe)
+register_probe(OpenEulerProbe)
 
 
 def detect():
@@ -419,7 +431,7 @@ def detect():
     return distro
 
 
-class Spec(object):
+class Spec:
 
     """
     Describes a distro, usually for setting minimum distro requirements

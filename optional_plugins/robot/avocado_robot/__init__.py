@@ -19,16 +19,17 @@ Plugin to run Robot Framework tests in Avocado
 import logging
 import re
 
-from avocado.core import loader
-from avocado.core import output
-from avocado.core import test
-from avocado.core.plugin_interfaces import CLI
 from robot import run
 from robot.errors import DataError
-from robot.parsing.model import TestData
 from robot.model import SuiteNamePatterns
 from robot.output.logger import LOGGER
+from robot.parsing.model import TestData
 
+from avocado.core import loader, output, test
+from avocado.core.nrunner import Runnable
+from avocado.core.plugin_interfaces import CLI, Resolver
+from avocado.core.resolver import (ReferenceResolution,
+                                   ReferenceResolutionResult, check_file)
 
 LOGGER.unregister_console_logger()
 
@@ -38,15 +39,6 @@ class RobotTest(test.SimpleTest):
     """
     Run a Robot command as a SIMPLE test.
     """
-
-    def __init__(self,
-                 name,
-                 params=None,
-                 base_logdir=None,
-                 job=None,
-                 executable=None):
-        super(RobotTest, self).__init__(name, params, base_logdir, job,
-                                        executable)
 
     @property
     def filename(self):
@@ -73,11 +65,24 @@ class RobotTest(test.SimpleTest):
                       'non-0 exit code (%s)' % result)
 
 
-class NotRobotTest(object):
+class NotRobotTest:
 
     """
     Not a robot test (for reporting purposes)
     """
+
+
+def find_tests(reference, test_suite):
+    data = TestData(parent=None,
+                    source=reference,
+                    include_suites=SuiteNamePatterns())
+    test_suite[data.name] = []
+    for test_case in data.testcase_table:
+        test_suite[data.name].append({'test_name': test_case.name,
+                                      'test_source': test_case.source})
+    for child_data in data.children:
+        find_tests(child_data, test_suite)
+    return test_suite
 
 
 class RobotLoader(loader.TestLoader):
@@ -86,27 +91,21 @@ class RobotLoader(loader.TestLoader):
     """
     name = "robot"
 
-    def __init__(self, args, extra_params):
-        super(RobotLoader, self).__init__(args, extra_params)
-
-    def discover(self, url, which_tests=loader.DiscoverMode.DEFAULT):
+    def discover(self, reference, which_tests=loader.DiscoverMode.DEFAULT):
         avocado_suite = []
         subtests_filter = None
 
-        if url is None:
+        if reference is None:
             return []
 
-        if ':' in url:
-            url, _subtests_filter = url.split(':', 1)
+        if ':' in reference:
+            reference, _subtests_filter = reference.split(':', 1)
             subtests_filter = re.compile(_subtests_filter)
         try:
-            test_data = TestData(parent=None,
-                                 source=url,
-                                 include_suites=SuiteNamePatterns())
-            robot_suite = self._find_tests(test_data, test_suite={})
-        except Exception as data:
+            robot_suite = find_tests(reference, test_suite={})
+        except Exception as data:  # pylint: disable=W0703
             if which_tests == loader.DiscoverMode.ALL:
-                return [(NotRobotTest, {"name": "%s: %s" % (url, data)})]
+                return [(NotRobotTest, {"name": "%s: %s" % (reference, data)})]
             return []
 
         for item in robot_suite:
@@ -120,17 +119,8 @@ class RobotLoader(loader.TestLoader):
                                                   'executable': test_name}))
         if which_tests == loader.DiscoverMode.ALL and not avocado_suite:
             return [(NotRobotTest, {"name": "%s: No robot-like tests found"
-                                    % url})]
+                                            % reference})]
         return avocado_suite
-
-    def _find_tests(self, data, test_suite):
-        test_suite[data.name] = []
-        for test_case in data.testcase_table:
-            test_suite[data.name].append({'test_name': test_case.name,
-                                          'test_source': test_case.source})
-        for child_data in data.children:
-            self._find_tests(child_data, test_suite)
-        return test_suite
 
     @staticmethod
     def get_type_label_mapping():
@@ -141,6 +131,41 @@ class RobotLoader(loader.TestLoader):
     def get_decorator_mapping():
         return {RobotTest: output.TERM_SUPPORT.healthy_str,
                 NotRobotTest: output.TERM_SUPPORT.fail_header_str}
+
+
+class RobotResolver(Resolver):
+
+    name = 'robot'
+    description = 'Test resolver for Robot Framework tests'
+
+    @staticmethod
+    def resolve(reference):
+
+        # It may be possible to have Robot Framework tests in other
+        # types of files such as reStructuredText (.rst), but given
+        # that we're not testing that, let's restrict to files ending
+        # in .robot files
+        criteria_check = check_file(reference, reference, suffix='.robot')
+        if criteria_check is not True:
+            return criteria_check
+
+        robot_suite = find_tests(reference, test_suite={})
+        runnables = []
+        for item in robot_suite:
+            for robot_test in robot_suite[item]:
+                uri = "%s:%s.%s" % (robot_test['test_source'],
+                                    item,
+                                    robot_test['test_name'])
+
+                runnables.append(Runnable('robot', uri=uri))
+
+        if runnables:
+            return ReferenceResolution(reference,
+                                       ReferenceResolutionResult.SUCCESS,
+                                       runnables)
+
+        return ReferenceResolution(reference,
+                                   ReferenceResolutionResult.NOTFOUND)
 
 
 class RobotCLI(CLI):
@@ -155,5 +180,5 @@ class RobotCLI(CLI):
     def configure(self, parser):
         pass
 
-    def run(self, args):
+    def run(self, config):
         loader.loader.register_plugin(RobotLoader)

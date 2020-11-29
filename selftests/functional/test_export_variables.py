@@ -1,14 +1,11 @@
 import os
-import tempfile
-import shutil
 import unittest
 
 from avocado import VERSION
 from avocado.core import exit_codes
-from avocado.utils import process
-from avocado.utils import script
+from avocado.utils import process, script
 
-from .. import AVOCADO, BASEDIR
+from .. import AVOCADO, BASEDIR, TestCaseTmpDir
 
 SCRIPT_CONTENT = """#!/bin/sh
 echo "Avocado Version: $AVOCADO_VERSION"
@@ -17,22 +14,20 @@ echo "Avocado Test workdir: $AVOCADO_TEST_WORKDIR"
 echo "Avocado Test logdir: $AVOCADO_TEST_LOGDIR"
 echo "Avocado Test logfile: $AVOCADO_TEST_LOGFILE"
 echo "Avocado Test outputdir: $AVOCADO_TEST_OUTPUTDIR"
-echo "Avocado Test sysinfodir: $AVOCADO_TEST_SYSINFODIR"
 
 test "$AVOCADO_VERSION" = "{version}" -a \
      -d "$AVOCADO_TEST_BASEDIR" -a \
      -d "$AVOCADO_TEST_WORKDIR" -a \
      -d "$AVOCADO_TEST_LOGDIR" -a \
      -f "$AVOCADO_TEST_LOGFILE" -a \
-     -d "$AVOCADO_TEST_OUTPUTDIR" -a \
-     -d "$AVOCADO_TEST_SYSINFODIR"
+     -d "$AVOCADO_TEST_OUTPUTDIR"
 """.format(version=VERSION)
 
 
-class EnvironmentVariablesTest(unittest.TestCase):
+class EnvironmentVariablesTest(TestCaseTmpDir):
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
+        super(EnvironmentVariablesTest, self).setUp()
         self.script = script.TemporaryScript(
             'version.sh',
             SCRIPT_CONTENT,
@@ -41,8 +36,8 @@ class EnvironmentVariablesTest(unittest.TestCase):
 
     def test_environment_vars(self):
         os.chdir(BASEDIR)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=on %s'
-                    % (AVOCADO, self.tmpdir, self.script.path))
+        cmd_line = ('%s run --job-results-dir %s %s'
+                    % (AVOCADO, self.tmpdir.name, self.script.path))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -50,8 +45,8 @@ class EnvironmentVariablesTest(unittest.TestCase):
                          (expected_rc, result))
 
     def tearDown(self):
+        super(EnvironmentVariablesTest, self).tearDown()
         self.script.remove()
-        shutil.rmtree(self.tmpdir)
 
 
 if __name__ == '__main__':

@@ -32,17 +32,16 @@ on them being loaded (`avocado --help`)::
     -v, --version         show program's version number and exit
     --config [CONFIG_FILE]
                           Use custom configuration from a file
+    --paginator {on,off}  Turn the paginator on/off.
     --show [STREAM[:LVL]]
                           List of comma separated builtin logs, or logging
                           streams optionally followed by LEVEL (DEBUG,INFO,...).
                           Builtin streams are: "test": test output; "debug":
                           tracebacks and other debugging info; "app":
                           application output; "early": early logging of other
-                          streams, including test (very verbose); "remote":
-                          fabric/paramiko debug; "all": all builtin streams;
-                          "none": disables regular output (leaving only errors
-                          enabled). By default: 'app'
-    -s, --silent          disables regular output (leaving only errors enabled)
+                          streams, including test (very verbose); "all": all
+                          builtin streams; "none": disables regular output
+                          (leaving only errors enabled). By default: 'app'
 
 Real use of avocado depends on running avocado subcommands. This a
 typical list of avocado subcommands::
@@ -84,20 +83,16 @@ Options for subcommand `run` (`avocado run --help`)::
                             are allowed to execute. Values <= zero means "no
                             timeout". You can also use suffixes, like: s
                             (seconds), m (minutes), h (hours).
-      --failfast {on,off}   Enable or disable the job interruption on first failed
+      --failfast            Enable the job interruption on first failed test.
                             test.
-      --keep-tmp {on,off}   Keep job temporary files (useful for avocado
-                            debugging). Defaults to off.
-      --sysinfo {on,off}    Enable or disable system information (hardware
-                            details, profilers, etc.). Current: on
+      --keep-tmp            Keep job temporary files (useful for avocado
+                            debugging).
+      --disable-sysinfo     Enable or disable sysinfo information. Like hardware
+                            details, profiles, etc.
       --execution-order {tests-per-variant,variants-per-test}
                             How to iterate through test suite and variants
 
     output and result format:
-      -s, --silent          Silence stdout
-      --show-job-log        Display only the job log on stdout. Useful for test
-                            debugging purposes. No output will be displayed if you
-                            also specify --silent
       --store-logging-stream [STREAM[:LEVEL] [STREAM[:LEVEL] ...]]
                             Store given logging STREAMs in
                             $JOB_RESULTS_DIR/$STREAM.$LEVEL.
@@ -150,11 +145,10 @@ Options for subcommand `run` (`avocado run --help`)::
                             all (record both stdout and stderr), stdout (record
                             only stderr), stderr (record only stderr). Current:
                             none
-      --output-check {on,off}
-                            Enable or disable test output (stdout/stderr) check.
-                            If this option is off, no output will be checked, even
-                            if there are reference files present for the test.
-                            Current: on (output check enabled)
+      --disable-output-check
+                            Disables test output (stdout/stderr) check. If this
+                            option is given, no output will be checked, even if
+                            there are reference files present for the test.
 
     loader options:
       --loaders [LOADERS [LOADERS ...]]
@@ -187,12 +181,16 @@ Options for subcommand `run` (`avocado run --help`)::
 
     filtering parameters:
       --filter-by-tags TAGS
-                            Filter INSTRUMENTED tests based on ":avocado:
-                            tags=tag1,tag2" notation in their class docstring
+                            Filter tests based on tags
       --filter-by-tags-include-empty
                             Include all tests without tags during filtering. This
                             effectively means they will be kept in the test suite
                             found previously to filtering.
+      --filter-by-tags-include-empty-key
+                            Include all tests that do not have a matching key in
+                            its key:val tags. This effectively means those tests
+                            will be kept in the test suite found previously to
+                            filtering.
 
     test execution inside docker container:
       --docker IMAGE        Name of the docker image torun tests on.
@@ -219,25 +217,6 @@ Options for subcommand `run` (`avocado run --help`)::
                             Automatically generate a core dump when the inferior
                             process received a fatal signal such as SIGSEGV or
                             SIGABRT
-
-    test execution on a remote machine:
-      --remote-hostname REMOTE_HOSTNAME
-                            Specify the hostname to login on remote machine
-      --remote-port REMOTE_PORT
-                            Specify the port number to login on remote machine.
-                            Current: 22
-      --remote-username REMOTE_USERNAME
-                            Specify the username to login on remote machine.
-                            Current: apahim
-      --remote-password REMOTE_PASSWORD
-                            Specify the password to login on remote machine
-      --remote-key-file REMOTE_KEY_FILE
-                            Specify an identity file with a private key instead of
-                            a password (Example: .pem files from Amazon EC2)
-      --remote-timeout SECONDS
-                            Amount of time (in seconds) to wait for a successful
-                            connection to the remote machine. Defaults to 60
-                            seconds.
 
     job replay:
       --replay REPLAY_JOBID
@@ -307,8 +286,6 @@ Options for subcommand `config` (`avocado config --help`)::
       -h, --help            show this help message and exit
       --datadir             Shows the data directories currently being used by
                             avocado
-      --paginator {on,off}  Turn the paginator on/off. Current: on
-
 
 Options for subcommand `diff` (`avocado diff --help`)::
 
@@ -327,7 +304,6 @@ Options for subcommand `diff` (`avocado diff --help`)::
                             Comma separated filter of diff sections:
                             (no)cmdline,(no)time,(no)variants,(no)results,
                             (no)config,(no)sysinfo (defaults to all enabled).
-      --paginator {on,off}  Turn the paginator on/off. Current: on
       --create-reports      Create temporary files with job reports (to be used by
                             other diff tools)
 
@@ -369,7 +345,6 @@ Options for subcommand `list` (`avocado list --help`)::
       -h, --help            show this help message and exit
       -V, --verbose         Whether to show extra information (headers and
                             summary). Current: False
-      --paginator {on,off}  Turn the paginator on/off. Current: on
 
     loader options:
       --loaders [LOADERS [LOADERS ...]]
@@ -402,12 +377,16 @@ Options for subcommand `list` (`avocado list --help`)::
 
     filtering parameters:
       --filter-by-tags TAGS
-                            Filter INSTRUMENTED tests based on ":avocado:
-                            tags=tag1,tag2" notation in their class docstring
+                            Filter tests based on tags
       --filter-by-tags-include-empty
                             Include all tests without tags during filtering. This
                             effectively means they will be kept in the test suite
                             found previously to filtering.
+      --filter-by-tags-include-empty-key
+                            Include all tests that do not have a matching key in
+                            its key:val tags. This effectively means those tests
+                            will be kept in the test suite found previously to
+                            filtering.
 
 Options for subcommand `multiplex` (`avocado multiplex --help`)::
 
@@ -419,7 +398,6 @@ Options for subcommand `multiplex` (`avocado multiplex --help`)::
       --variants VARIANTS   Verbosity of the list of variants. (positive integer -
                             0, 1, ... - or none, brief, normal, verbose, full,
                             max)
-      --system-wide         Combine the files with the default tree.
       -c, --contents        [obsoleted by --variants] Shows the node content
                             (variables)
 
@@ -450,7 +428,6 @@ Options for subcommand `plugins` (`avocado plugins --help`)::
 
     optional arguments:
       -h, --help            show this help message and exit
-      --paginator {on,off}  Turn the paginator on/off. Current: on
 
 Options for subcommand `sysinfo` (`avocado sysinfo --help`)::
 
@@ -486,10 +463,10 @@ DEBUGGING TESTS
 
 When you are developing new tests, frequently you want to look at the
 straight output of the job log in the stdout, without having to tail the
-job log. In order to do that, you can use --show-job-log to the avocado
+job log. In order to do that, you can use --show=test to the avocado
 test runner::
 
-    $ scripts/avocado run examples/tests/sleeptest.py --show-job-log
+    $ avocado --show=test run examples/tests/sleeptest.py
     ...
     PARAMS (key=timeout, path=*, default=None) => None
     START 1-sleeptest.py:SleepTest.test
@@ -511,7 +488,7 @@ Edit your `~/.config/avocado/avocado.conf` file and add::
 
 Running the same example with this option will give you::
 
-    $ scripts/avocado run sleeptest --show-job-log
+    $ avocado --show=test run sleeptest.py
     ...
     START 1-sleeptest.py:SleepTest.test
     PASS 1-sleeptest.py:SleepTest.test
@@ -528,11 +505,9 @@ stdout, making this a useful feature for test development/debugging.
 SILENCING RUNNER STDOUT
 =======================
 
-You may specify `--silent`, that means avocado will turn off all runner
-stdout. Even if you specify things like `--show-job-log` in the CLI,
-`--silent` will have precedence and you will not get application stdout.
-Note that `--silent` does not affect on disk job logs, those continue to
-be generated normally.
+You may specify `--show=none`, that means avocado will turn off all
+runner stdout.  Note that `--show=none` does not affect on disk
+job logs, those continue to be generated normally.
 
 SILENCING SYSINFO REPORT
 ========================
@@ -641,7 +616,6 @@ Since this is a directory, it should have content similar to::
     $ ls -1 ~/avocado/job-results/latest/test-results/1-sleeptest.py\:SleepTest.test/
     data
     debug.log
-    remote.log
     stderr
     stdout
     sysinfo
@@ -998,37 +972,6 @@ Let's look what's in each of them::
 
 Now, every time this test runs, it'll take into account the expected
 files that were recorded, no need to do anything else but run the test.
-
-RUNNING REMOTE TESTS
-====================
-
-Avocado allows you to execute tests on a remote machine by means of a
-SSH network connection. The remote machine must be configured to accept
-remote connections and the Avocado framework have to be installed in
-both origin and remote machines.
-
-When running tests on remote machine, the test sources and its data (if 
-any present) are transferred to the remote target, just before the test
-execution. After the test execution, all test results are transferred 
-back to the origin machine.
-
-Here is how to run the sleeptest example test in a remote machine with IP
-address 192.168.0.123 (standard port 22), remote user name `fedora` and
-remote user password `123456`::
-
-    $ avocado run sleeptest.py --remote-hostname 192.168.0.123 --remote-username fedora --remote-password 123456
-
-The output should look like::
-
-    JOB ID    : <id>
-    JOB LOG   : /home/<user>/avocado/job-results/job-<date>-<shortid>/job.log
-    LOGIN      : fedora@localhost:22 (TIMEOUT: 60 seconds)
-     (1/1) sleeptest.py:SleepTest.test: PASS (1.02 s)
-    RESULTS    : PASS 1 | ERROR 0 | FAIL 0 | SKIP 0 | WARN 0 | INTERRUPT 0
-    JOB TIME   : 1.12 s
-
-For more information, please consult the topic Remote Machine Plugin
-on Avocado's online documentation.
 
 LINUX DISTRIBUTION UTILITIES
 ============================

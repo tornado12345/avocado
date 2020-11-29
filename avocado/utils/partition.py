@@ -22,14 +22,12 @@
 Utility for handling partitions.
 """
 
+import hashlib
 import logging
 import os
-import hashlib
 import tempfile
 
-from . import process
-from . import filelock
-
+from . import filelock, process
 
 LOG = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ class PartitionError(Exception):
                                       super(PartitionError, self).__str__())
 
 
-class MtabLock(object):
+class MtabLock:
     device = "/etc/mtab"
 
     def __init__(self, timeout=60):
@@ -76,25 +74,27 @@ class MtabLock(object):
         self.lock.__exit__(exc_type, exc_value, exc_traceback)
 
 
-class Partition(object):
+class Partition:
 
     """
     Class for handling partitions and filesystems
     """
 
-    def __init__(self, device, loop_size=0, mountpoint=None):
+    def __init__(self, device, loop_size=0, mountpoint=None, mkfs_flags='', mount_options=None):
         """
         :param device: The device in question (e.g."/dev/hda2"). If device is a
                 file it will be mounted as loopback.
         :param loop_size: Size of loopback device (in MB). Defaults to 0.
         :param mountpoint: Where the partition to be mounted to.
+        :param mkfs_flags: Optional flags for mkfs
+        :param mount_options: Add mount options optionally
         """
         self.device = device
         self.loop = loop_size
         self.fstype = None
         self.mountpoint = mountpoint
-        self.mkfs_flags = ''
-        self.mount_options = None
+        self.mkfs_flags = mkfs_flags
+        self.mount_options = mount_options
         if self.loop:
             process.run('dd if=/dev/zero of=%s bs=1M count=%d'
                         % (device, self.loop))
@@ -199,7 +199,7 @@ class Partition(object):
         else:
             self.fstype = fstype
 
-    def mount(self, mountpoint=None, fstype=None, args=''):
+    def mount(self, mountpoint=None, fstype=None, args='', mnt_check=True):
         """
         Mount this partition to a mount point
 
@@ -208,6 +208,7 @@ class Partition(object):
         :param fstype: Filesystem type. If not provided partition object value
                 will be used.
         :param args: Arguments to be passed to "mount" command.
+        :param mnt_check: Flag to check/avoid checking existing device/mountpoint
         """
         if not mountpoint:
             mountpoint = self.mountpoint
@@ -228,10 +229,11 @@ class Partition(object):
         args = args.lstrip()
 
         with MtabLock():
-            if self.device in self.list_mount_devices():
-                raise PartitionError(self, "Attempted to mount mounted device")
-            if mountpoint in self.list_mount_points():
-                raise PartitionError(self, "Attempted to mount busy directory")
+            if mnt_check:
+                if self.device in self.list_mount_devices():
+                    raise PartitionError(self, "Attempted to mount mounted device")
+                if mountpoint in self.list_mount_points():
+                    raise PartitionError(self, "Attempted to mount busy directory")
             if not os.path.isdir(mountpoint):
                 os.makedirs(mountpoint)
             try:
@@ -246,10 +248,6 @@ class Partition(object):
         """
         Returns a list of processes using a given mountpoint
         """
-        try:
-            FileNotFoundError
-        except NameError:
-            FileNotFoundError = IOError   # pylint: disable=W0622
         try:
             cmd = "lsof " + mnt
             out = process.system_output(cmd, sudo=True)

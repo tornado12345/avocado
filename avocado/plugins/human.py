@@ -15,10 +15,9 @@
 Human result UI
 """
 
-from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import ResultEvents
-from avocado.core.plugin_interfaces import JobPre, JobPost
 from avocado.core import output
+from avocado.core.output import LOG_UI
+from avocado.core.plugin_interfaces import JobPost, JobPre, ResultEvents
 
 
 class Human(ResultEvents):
@@ -30,25 +29,24 @@ class Human(ResultEvents):
     name = 'human'
     description = "Human Interface UI"
 
-    output_mapping = {'PASS': output.TERM_SUPPORT.PASS,
-                      'ERROR': output.TERM_SUPPORT.ERROR,
-                      'FAIL': output.TERM_SUPPORT.FAIL,
-                      'SKIP': output.TERM_SUPPORT.SKIP,
-                      'WARN': output.TERM_SUPPORT.WARN,
-                      'INTERRUPTED': output.TERM_SUPPORT.INTERRUPT,
-                      'CANCEL': output.TERM_SUPPORT.CANCEL}
-
-    def __init__(self, args):
+    def __init__(self, config):
         self.__throbber = output.Throbber()
-        stdout_claimed_by = getattr(args, 'stdout_claimed_by', None)
+        stdout_claimed_by = config.get('stdout_claimed_by', None)
         self.owns_stdout = not stdout_claimed_by
+        self.runner = config.get('run.test_runner')
 
     def pre_tests(self, job):
         if not self.owns_stdout:
             return
         LOG_UI.info("JOB ID     : %s", job.unique_id)
-        replay_source_job = getattr(job.args, "replay_sourcejob", False)
-        if replay_source_job:
+        # TODO: this is part of the legacy implementation of the
+        # replay plugin and should be removed soon.
+        replay_enabled = replay_source_job = job.config.get("replay_sourcejob", False)
+        # The "avocado replay" plugin sets a different namespace
+        if not replay_source_job:
+            replay_enabled = job.config.get("job.replay.enabled")
+            replay_source_job = job.config.get("job.replay.source_job_id")
+        if replay_enabled and replay_source_job:
             LOG_UI.info("SRC JOB ID : %s", replay_source_job)
         LOG_UI.info("JOB LOG    : %s", job.logfile)
 
@@ -62,8 +60,11 @@ class Human(ResultEvents):
         else:
             name = "<unknown>"
             uid = '?'
-        LOG_UI.debug(' (%s/%s) %s:  ', uid, result.tests_total, name,
-                     extra={"skip_newline": True})
+        if self.runner == 'nrunner':
+            LOG_UI.debug(' (%s/%s) %s: STARTED', uid, result.tests_total, name)
+        else:
+            LOG_UI.debug(' (%s/%s) %s:  ', uid, result.tests_total, name,
+                         extra={"skip_newline": True})
 
     def test_progress(self, progress=False):
         if not self.owns_stdout:
@@ -72,11 +73,12 @@ class Human(ResultEvents):
             color = output.TERM_SUPPORT.PASS
         else:
             color = output.TERM_SUPPORT.PARTIAL
-        LOG_UI.debug(color + self.__throbber.render() +
-                     output.TERM_SUPPORT.ENDC, extra={"skip_newline": True})
+        if self.runner == 'runner':
+            LOG_UI.debug('%s%s%s', color, self.__throbber.render(),
+                         output.TERM_SUPPORT.ENDC, extra={"skip_newline": True})
 
     def get_colored_status(self, status, extra=None):
-        out = (output.TERM_SUPPORT.MOVE_BACK + self.output_mapping[status] +
+        out = (output.TERM_SUPPORT.MOVE_BACK + output.TEST_STATUS_MAPPING[status] +
                status)
         if extra:
             if len(extra) > 255:
@@ -95,12 +97,29 @@ class Human(ResultEvents):
         duration = (" (%.2f s)" % state.get('time_elapsed', -1)
                     if status != "SKIP"
                     else "")
-        msg = self.get_colored_status(status, state.get("fail_reason", None))
+        if self.runner == 'nrunner':
+            if "name" in state:
+                name = state["name"]
+                uid = name.str_uid
+                name = name.name + name.str_variant
+            else:
+                name = "<unknown>"
+                uid = '?'
+
+            msg = self.get_colored_status(status, state.get("fail_reason", None))
+            LOG_UI.debug(' (%s/%s) %s:  ', uid, result.tests_total, name,
+                         extra={"skip_newline": True})
+        else:
+            msg = self.get_colored_status(status, state.get("fail_reason", None))
         LOG_UI.debug(msg + duration)
 
     def post_tests(self, job):
         if not self.owns_stdout:
             return
+
+        if job.interrupted_reason is not None:
+            LOG_UI.info(job.interrupted_reason)
+
         if job.status == 'PASS':
             LOG_UI.info("RESULTS    : PASS %d | ERROR %d | FAIL %d | SKIP %d | "
                         "WARN %d | INTERRUPT %s | CANCEL %s", job.result.passed,
@@ -123,5 +142,5 @@ class HumanJob(JobPre, JobPost):
 
     def post(self, job):
         if job.status == 'PASS':
-            if not getattr(job.args, 'stdout_claimed_by', None):
+            if not job.config.get('stdout_claimed_by', None):
                 LOG_UI.info("JOB TIME   : %.2f s", job.time_elapsed)

@@ -25,18 +25,19 @@ The general reasoning to find paths is:
 * The next best location is the default system wide one.
 * The next best location is the default user specific one.
 """
+import atexit
+import glob
 import os
 import shutil
 import sys
-import time
 import tempfile
+import time
 
-from . import job_id
-from . import settings
-from . import exit_codes
-from .output import LOG_JOB, LOG_UI
 from ..utils import path as utils_path
 from ..utils.data_structures import Borg
+from . import exit_codes, job_id
+from .output import LOG_JOB, LOG_UI
+from .settings import settings
 
 if 'VIRTUAL_ENV' in os.environ:
     SYSTEM_BASE_DIR = os.environ['VIRTUAL_ENV']
@@ -58,7 +59,8 @@ def _get_settings_dir(dir_name):
     """
     Returns a given "datadir" directory as set by the configuration system
     """
-    path = settings.settings.get_value('datadir.paths', dir_name, 'path')
+    namespace = 'datadir.paths.{}'.format(dir_name)
+    path = settings.as_dict().get(namespace)
     return os.path.abspath(path)
 
 
@@ -99,23 +101,24 @@ def get_test_dir():
     The heuristics used to determine the test dir are:
     1) If an explicit test dir is set in the configuration system, it
     is used.
-    2) If user is running Avocado out of the source tree, the example
-    test dir is used
-    3) System wide test dir is used
-    4) User default test dir (~/avocado/tests) is used
+    2) If user is running Avocado from its source code tree, the example test
+    dir is used.
+    3) System wide test dir is used.
+    4) User default test dir (~/avocado/tests) is used.
     """
     configured = _get_settings_dir('test_dir')
-    if utils_path.usable_ro_dir(configured, False):
+    if utils_path.usable_ro_dir(configured):
         return configured
 
-    if settings.settings.intree:
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        return os.path.join(base_dir, 'examples', 'tests')
+    source_tree_root = os.path.dirname(os.path.dirname(
+        os.path.dirname(__file__)))
+    if os.path.exists(os.path.join(source_tree_root, 'examples')):
+        return os.path.join(source_tree_root, 'examples', 'tests')
 
-    if utils_path.usable_ro_dir(SYSTEM_TEST_DIR, False):
+    if utils_path.usable_ro_dir(SYSTEM_TEST_DIR):
         return SYSTEM_TEST_DIR
 
-    if utils_path.usable_ro_dir(USER_TEST_DIR):
+    if utils_path.usable_rw_dir(USER_TEST_DIR):
         return USER_TEST_DIR
 
 
@@ -201,8 +204,7 @@ def get_cache_dirs():
     """
     Returns the list of cache dirs, according to configuration and convention
     """
-    cache_dirs = settings.settings.get_value('datadir.paths', 'cache_dirs',
-                                             key_type=list, default=[])
+    cache_dirs = settings.as_dict().get('datadir.paths.cache_dirs')
     datadir_cache = os.path.join(get_data_dir(), 'cache')
     if datadir_cache not in cache_dirs:
         cache_dirs.append(datadir_cache)
@@ -219,7 +221,7 @@ class _TmpDirTracker(Borg):
         if not hasattr(self, 'tmp_dir'):
             if basedir is not None:
                 self.basedir = basedir
-            self.tmp_dir = tempfile.mkdtemp(prefix='avocado_',
+            self.tmp_dir = tempfile.mkdtemp(prefix='avocado_',  # pylint: disable=W0201
                                             dir=self.basedir)
         elif basedir is not None and basedir != self.basedir:
             LOG_JOB.error("The tmp_dir was already created. The new basedir "
@@ -284,3 +286,67 @@ def clean_tmp_files():
         shutil.rmtree(tmp_dir, ignore_errors=True)
     except OSError:
         pass
+
+
+def get_job_results_dir(job_ref, logs_dir=None):
+    """
+    Get the job results directory from a job reference.
+
+    :param job_ref: job reference, which can be:
+                    * an valid path to the job results directory. In this case
+                    it is checked if 'id' file exists
+                    * the path to 'id' file
+                    * the job id, which can be 'latest'
+                    * an partial job id
+    :param logs_dir: path to base logs directory (optional), otherwise it uses
+                     the value from settings.
+    """
+    # Check if job_ref is actually the path to either the job logs
+    # directory itself or the job id file.
+    path_ref = os.path.expanduser(job_ref)
+    if os.path.isdir(path_ref):
+        # The id file should exists otherwise it is not the expected
+        # directory.
+        if os.path.isfile(os.path.join(path_ref, 'id')):
+            return os.path.abspath(path_ref)
+        return None
+    elif os.path.isfile(path_ref):
+        if os.path.basename(path_ref) == 'id':
+            return os.path.abspath(os.path.dirname(path_ref))
+        return None
+
+    # At this point job_ref is expected to be an id (can be partial) or
+    # the 'latest' symlink.
+    #
+
+    if logs_dir is None:
+        logs_dir = get_logs_dir()
+    else:
+        logs_dir = os.path.expanduser(logs_dir)
+
+    if job_ref == 'latest':
+        try:
+            actual_dir = os.readlink(os.path.join(logs_dir, 'latest'))
+            return os.path.join(logs_dir, actual_dir)
+        except IOError:
+            return None
+
+    matches = 0
+    short_jobid = job_ref[:7]
+    if len(short_jobid) < 7:
+        short_jobid += '*'
+    idfile_pattern = os.path.join(logs_dir, 'job-*-%s' % short_jobid, 'id')
+    for id_file in glob.glob(idfile_pattern):
+        with open(id_file, 'r') as fid:
+            line = fid.read().strip('\n')
+            if line.startswith(job_ref):
+                match_file = id_file
+                matches += 1
+            if matches > 1:
+                raise ValueError("hash '%s' is not unique enough" % job_ref)
+    if matches == 1:
+        return os.path.dirname(match_file)
+    return None
+
+
+atexit.register(clean_tmp_files)

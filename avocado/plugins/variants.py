@@ -20,7 +20,7 @@ from avocado.core import exit_codes
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
 from avocado.core.settings import settings
-
+from avocado.core.varianter import Varianter
 
 _VERBOSITY_LEVELS = {"none": 0, "brief": 1, "normal": 2, "verbose": 3,
                      "full": 4, "max": 99}
@@ -45,87 +45,132 @@ class Variants(CLICmd):
     name = 'variants'
     description = "Tool to analyze and visualize test variants and params"
 
-    def __init__(self, *args, **kwargs):
-        super(Variants, self).__init__(*args, **kwargs)
-
     def configure(self, parser):
         parser = super(Variants, self).configure(parser)
         verbosity_levels = ("(positive integer - 0, 1, ... - or %s)"
                             % ", ".join(sorted(_VERBOSITY_LEVELS,
                                                key=lambda _: _VERBOSITY_LEVELS[_])))
-        parser.add_argument("--summary", type=map_verbosity_level,
-                            help="Verbosity of the variants summary. " +
-                            verbosity_levels)
-        parser.add_argument("--variants", type=map_verbosity_level,
-                            help="Verbosity of the list of variants. " +
-                            verbosity_levels, default=1)
-        parser.add_argument('--system-wide', action='store_false',
-                            default=True, dest="variants-skip-defaults",
-                            help="Combine the files with the default "
-                            "tree.")
-        parser.add_argument('-c', '--contents', action='store_true',
-                            default=False, help="[obsoleted by --variants] "
-                            "Shows the node content (variables)")
-        parser.add_argument('--json-variants-dump', default=None,
-                            help="Dump the Variants to a JSON serialized file")
-        env_parser = parser.add_argument_group("environment view options")
-        env_parser.add_argument('-d', '--debug', action='store_true',
-                                dest="varianter_debug", default=False,
-                                help="Use debug implementation to gather more"
-                                " information.")
-        tree_parser = parser.add_argument_group("tree view options")
-        tree_parser.add_argument('-t', '--tree', action='store_true',
-                                 default=False, help='[obsoleted by --summary]'
-                                 ' Shows the multiplex tree structure')
-        tree_parser.add_argument('-i', '--inherit', action="store_true",
-                                 help="[obsoleted by --summary] Show the "
-                                 "inherited values")
 
-    def run(self, args):
+        help_msg = 'Verbosity of the variants summary. ' + verbosity_levels
+        settings.register_option(section='variants',
+                                 key='summary',
+                                 key_type=map_verbosity_level,
+                                 default=0,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--summary')
+
+        help_msg = 'Verbosity of the list of variants. ' + verbosity_levels
+        settings.register_option(section='variants',
+                                 key='variants',
+                                 key_type=map_verbosity_level,
+                                 default=1,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--variants')
+
+        help_msg = ('[obsoleted by --variants] Shows the node content '
+                    '(variables)')
+        settings.register_option(section='variants',
+                                 key='contents',
+                                 key_type=bool,
+                                 default=False,
+                                 parser=parser,
+                                 help_msg=help_msg,
+                                 short_arg='-c',
+                                 long_arg='--contents')
+
+        help_msg = 'Dump the Variants to a JSON serialized file'
+        settings.register_option(section='variants',
+                                 key='json_variants_dump',
+                                 help_msg=help_msg,
+                                 default=None,
+                                 parser=parser,
+                                 long_arg='--json-variants-dump')
+
+        env_parser = parser.add_argument_group("environment view options")
+
+        help_msg = 'Use debug implementation to gather more information.'
+        settings.register_option(section='variants',
+                                 key='debug',
+                                 help_msg=help_msg,
+                                 parser=env_parser,
+                                 key_type=bool,
+                                 default=False,
+                                 long_arg='--debug',
+                                 short_arg='-d')
+
+        tree_parser = parser.add_argument_group("tree view options")
+
+        help_msg = ('[obsoleted by --summary] Shows the multiplex tree '
+                    'structure')
+        settings.register_option(section='variants',
+                                 key='tree',
+                                 key_type=bool,
+                                 default=False,
+                                 help_msg=help_msg,
+                                 parser=tree_parser,
+                                 long_arg='--tree',
+                                 short_arg='-t')
+
+        help_msg = '[obsoleted by --summary] Show the inherited values'
+        settings.register_option(section='variants',
+                                 key='inherit',
+                                 key_type=bool,
+                                 help_msg=help_msg,
+                                 parser=tree_parser,
+                                 default=False,
+                                 short_arg='-i',
+                                 long_arg='--inherit')
+
+    def run(self, config):
+        tree = config.get('variants.tree')
+        summary = config.get('variants.summary')
+        variants = config.get('variants.variants')
+        contents = config.get('variants.contents')
+        inherit = config.get('variants.inherit')
+
         err = None
-        if args.tree and args.varianter_debug:
+        if tree and config.get('variants.debug'):
             err = "Option --tree is incompatible with --debug."
-        elif not args.tree and args.inherit:
+        elif not tree and inherit:
             err = "Option --inherit can be only used with --tree"
         if err:
             LOG_UI.error(err)
             sys.exit(exit_codes.AVOCADO_FAIL)
-        varianter = args.avocado_variants
+        varianter = Varianter()
         try:
-            varianter.parse(args)
+            varianter.parse(config)
         except (IOError, ValueError) as details:
             LOG_UI.error("Unable to parse varianter: %s", details)
             sys.exit(exit_codes.AVOCADO_FAIL)
-        use_utf8 = settings.get_value("runner.output", "utf8",
-                                      key_type=bool, default=None)
-        summary = args.summary or 0
-        variants = args.variants or 0
-
+        use_utf8 = config.get("runner.output.utf8")
         # Parse obsolete options (unsafe to combine them with new args)
-        if args.tree:
+        if tree:
             variants = 0
             summary += 1
-            if args.contents:
+            if contents:
                 summary += 1
-            if args.inherit:
+            if inherit:
                 summary += 2
         else:
-            if args.contents:
+            if contents:
                 variants += 2
 
-        # Export the serialized avocado_variants
-        if args.json_variants_dump is not None:
+        json_variants_dump = config.get('variants.json_variants_dump')
+        # Export the serialized variants
+        if json_variants_dump is not None:
             try:
-                with open(args.json_variants_dump, 'w') as variants_file:
-                    json.dump(args.avocado_variants.dump(), variants_file)
+                with open(json_variants_dump, 'w') as variants_file:
+                    json.dump(varianter.dump(), variants_file)
             except IOError:
-                LOG_UI.error("Cannot write %s", args.json_variants_dump)
+                LOG_UI.error("Cannot write %s", json_variants_dump)
                 sys.exit(exit_codes.AVOCADO_FAIL)
 
         # Produce the output
-        lines = args.avocado_variants.to_str(summary=summary,
-                                             variants=variants,
-                                             use_utf8=use_utf8)
+        lines = varianter.to_str(summary=summary,
+                                 variants=variants,
+                                 use_utf8=use_utf8)
         for line in lines.splitlines():
             LOG_UI.debug(line)
 

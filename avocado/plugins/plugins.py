@@ -18,6 +18,7 @@ Plugins information plugin
 from avocado.core import dispatcher
 from avocado.core.output import LOG_UI
 from avocado.core.plugin_interfaces import CLICmd
+from avocado.core.resolver import Resolver
 from avocado.utils import astring
 
 
@@ -30,15 +31,10 @@ class Plugins(CLICmd):
     name = 'plugins'
     description = 'Displays plugin information'
 
-    def configure(self, parser):
-        parser = super(Plugins, self).configure(parser)
-        parser.add_argument('--paginator',
-                            choices=('on', 'off'), default='on',
-                            help='Turn the paginator on/off. '
-                            'Current: %(default)s')
-
-    def run(self, args):
+    def run(self, config):
         plugin_types = [
+            (dispatcher.InitDispatcher(),
+             'Plugins that always need to be initialized (init): '),
             (dispatcher.CLICmdDispatcher(),
              'Plugins that add new commands (cli.cmd):'),
             (dispatcher.CLIDispatcher(),
@@ -47,11 +43,17 @@ class Plugins(CLICmd):
              'Plugins that run before/after the execution of jobs (job.prepost):'),
             (dispatcher.ResultDispatcher(),
              'Plugins that generate job result in different formats (result):'),
-            (dispatcher.ResultEventsDispatcher(args),
+            (dispatcher.ResultEventsDispatcher(config),
              ('Plugins that generate job result based on job/test events '
               '(result_events):')),
             (dispatcher.VarianterDispatcher(),
-             'Plugins that generate test variants (varianter): ')
+             'Plugins that generate test variants (varianter): '),
+            (Resolver(),
+             'Plugins that resolve test references (resolver): '),
+            (dispatcher.RunnerDispatcher(),
+             'Plugins that run test suites on a job (runners): '),
+            (dispatcher.SpawnerDispatcher(),
+             'Plugins that spawn tasks and know about their status (spawner): '),
         ]
         for plugins_active, msg in plugin_types:
             LOG_UI.info(msg)

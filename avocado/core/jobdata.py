@@ -17,26 +17,23 @@ Record/retrieve job information
 """
 
 import ast
-import glob
 import json
 import os
 
-from . import varianter
-from .output import LOG_UI, LOG_JOB
-from .settings import settings
 from ..utils.path import init_dir
-
+from .output import LOG_JOB, LOG_UI
+from .settings import settings
+from .varianter import VARIANTS_FILENAME
 
 JOB_DATA_DIR = 'jobdata'
 CONFIG_FILENAME = 'config'
 TEST_REFERENCES_FILENAME = 'test_references'
-VARIANTS_FILENAME = 'variants.json'
 PWD_FILENAME = 'pwd'
-ARGS_FILENAME = 'args.json'
+JOB_CONFIG_FILENAME = 'args.json'
 CMDLINE_FILENAME = 'cmdline'
 
 
-def record(args, logdir, variants, references=None, cmdline=None):
+def record(job, cmdline=None):
     """
     Records all required job information.
     """
@@ -44,14 +41,15 @@ def record(args, logdir, variants, references=None, cmdline=None):
         for log in [LOG_UI, LOG_JOB]:
             log.warning("jobdata.variants: Unable to serialize '%s'", item)
         return str(item)
-    base_dir = init_dir(logdir, JOB_DATA_DIR)
+    base_dir = init_dir(job.logdir, JOB_DATA_DIR)
     path_cfg = os.path.join(base_dir, CONFIG_FILENAME)
     path_references = os.path.join(base_dir, TEST_REFERENCES_FILENAME)
     path_variants = os.path.join(base_dir, VARIANTS_FILENAME)
     path_pwd = os.path.join(base_dir, PWD_FILENAME)
-    path_args = os.path.join(base_dir, ARGS_FILENAME)
+    path_job_config = os.path.join(base_dir, JOB_CONFIG_FILENAME)
     path_cmdline = os.path.join(base_dir, CMDLINE_FILENAME)
 
+    references = job.config.get('run.references')
     if references:
         with open(path_references, 'w') as references_file:
             references_file.write('%s' % references)
@@ -64,7 +62,10 @@ def record(args, logdir, variants, references=None, cmdline=None):
         os.fsync(config_file)
 
     with open(path_variants, 'w') as variants_file:
-        json.dump(variants.dump(), variants_file, default=json_bad_variants_obj)
+        variants = []
+        for suite in job.test_suites:
+            variants.append(suite.variants.dump())
+        json.dump(variants, variants_file, default=json_bad_variants_obj)
         variants_file.flush()
         os.fsync(variants_file)
 
@@ -73,10 +74,10 @@ def record(args, logdir, variants, references=None, cmdline=None):
         pwd_file.flush()
         os.fsync(pwd_file)
 
-    with open(path_args, 'w') as args_file:
-        json.dump(args.__dict__, args_file, default=lambda x: None)
-        args_file.flush()
-        os.fsync(args_file)
+    with open(path_job_config, 'w') as job_config_file:
+        json.dump(job.config, job_config_file, default=lambda x: None)
+        job_config_file.flush()
+        os.fsync(job_config_file)
 
     with open(path_cmdline, 'w') as cmdline_file:
         cmdline_file.write('%s' % cmdline)
@@ -113,24 +114,21 @@ def retrieve_references(resultsdir):
         return ast.literal_eval(references_file.read())
 
 
-def retrieve_variants(resultsdir):
+def get_variants_path(resultsdir):
     """
-    Retrieves the job variants object from the results directory.
+    Retrieves the variants path from the results directory.
     """
-    recorded_variants = _retrieve(resultsdir, VARIANTS_FILENAME)
-    if recorded_variants:
-        with open(recorded_variants, 'r') as variants_file:
-            return varianter.Varianter(state=json.load(variants_file))
+    return _retrieve(resultsdir, VARIANTS_FILENAME)
 
 
-def retrieve_args(resultsdir):
+def retrieve_job_config(resultsdir):
     """
-    Retrieves the job args from the results directory.
+    Retrieves the job config from the results directory.
     """
-    recorded_args = _retrieve(resultsdir, ARGS_FILENAME)
-    if recorded_args:
-        with open(recorded_args, 'r') as args_file:
-            return json.load(args_file)
+    recorded_job_config = _retrieve(resultsdir, JOB_CONFIG_FILENAME)
+    if recorded_job_config:
+        with open(recorded_job_config, 'r') as job_config_file:
+            return json.load(job_config_file)
 
 
 def retrieve_config(resultsdir):
@@ -164,57 +162,3 @@ def retrieve_cmdline(resultsdir):
         return None
     with open(recorded_cmdline, 'r') as cmdline_file:
         return ast.literal_eval(cmdline_file.read())
-
-
-def get_resultsdir(logdir, jobid):
-    """
-    Gets the job results directory using a Job ID.
-    """
-    if os.path.isdir(jobid):
-        return os.path.expanduser(jobid)
-    elif os.path.isfile(jobid):
-        return os.path.dirname(os.path.expanduser(jobid))
-    elif jobid == 'latest':
-        try:
-            actual_dir = os.readlink(os.path.join(logdir, 'latest'))
-            return os.path.join(logdir, actual_dir)
-        except IOError:
-            return None
-
-    matches = 0
-    short_jobid = jobid[:7]
-    if len(short_jobid) < 7:
-        short_jobid += '*'
-    idfile_pattern = os.path.join(logdir, 'job-*-%s' % short_jobid, 'id')
-    for id_file in glob.glob(idfile_pattern):
-        if get_id(id_file, jobid) is not None:
-            match_file = id_file
-            matches += 1
-            if matches > 1:
-                raise ValueError("hash '%s' is not unique enough" % jobid)
-
-    if matches == 1:
-        return os.path.dirname(match_file)
-    else:
-        return None
-
-
-def get_id(path, jobid):
-    """
-    Gets the full Job ID using the results directory path and a partial
-    Job ID or the string 'latest'.
-    """
-    if os.path.isdir(jobid) or os.path.isfile(jobid):
-        jobid = ''
-    elif jobid == 'latest':
-        jobid = os.path.basename(os.path.dirname(path))[-7:]
-
-    if not os.path.exists(path):
-        return None
-
-    with open(path, 'r') as jobid_file:
-        content = jobid_file.read().strip('\n')
-    if content.startswith(jobid):
-        return content
-    else:
-        return None

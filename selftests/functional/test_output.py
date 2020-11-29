@@ -1,7 +1,7 @@
 import json
 import os
 import re
-import shutil
+import shlex
 import tempfile
 import unittest
 from xml.dom import minidom
@@ -9,20 +9,32 @@ from xml.dom import minidom
 from avocado.core import exit_codes
 from avocado.core.output import TermSupport
 from avocado.utils import genio
-from avocado.utils import process
-from avocado.utils import script
 from avocado.utils import path as utils_path
+from avocado.utils import process, script
 
-from .. import AVOCADO, BASEDIR
-
+from .. import AVOCADO, TestCaseTmpDir, skipUnlessPathExists
 
 # AVOCADO may contain more than a single command, as it can be
 # prefixed by the Python interpreter
-AVOCADO_QUOTED = ", ".join(["'%s'" % cmd for cmd in AVOCADO.split(' ')])
+AVOCADO_QUOTED = "', '".join(shlex.split(AVOCADO))
 PERL_TAP_PARSER_SNIPPET = """#!/bin/env perl
 use TAP::Parser;
 
-my $parser = TAP::Parser->new( { exec => [%s, 'run', 'passtest.py', 'errortest.py', 'warntest.py', '--tap', '-', '--sysinfo', 'off', '--job-results-dir', '%%s'] } );
+my $parser = TAP::Parser->new( { exec => ['%s', 'run', 'passtest.py', 'errortest.py', 'warntest.py', '--tap', '-', '--disable-sysinfo', '--job-results-dir', '%%s'] } );
+
+while ( my $result = $parser->next ) {
+        $result->is_unknown && die "Unknown line \\"" . $result->as_string . "\\" in the TAP output!\n";
+}
+$parser->parse_errors == 0 || die "Parser errors!\n";
+$parser->is_good_plan || die "Plan is not a good plan!\n";
+$parser->plan eq '1..3' || die "Plan does not match what was expected!\n";
+""" % AVOCADO_QUOTED
+
+
+PERL_TAP_PARSER_FAILFAST_SNIPPET = """#!/bin/env perl
+use TAP::Parser;
+
+my $parser = TAP::Parser->new( { exec => ['%s', 'run', 'failtest.py', 'errortest.py', 'warntest.py', '--tap', '-', '--failfast', '--disable-sysinfo', '--job-results-dir', '%%s'] } );
 
 while ( my $result = $parser->next ) {
         $result->is_unknown && die "Unknown line \\"" . $result->as_string . "\\" in the TAP output!\n";
@@ -109,14 +121,46 @@ class OutputCheckOnOff(Test):
         process.run(cmd % ('stderr', '__STDERR_DO_RECORD_CONTENT__'))
 """
 
+OUTPUT_SHOW_TEST = """
+#!/usr/bin/env python3
 
-def image_output_uncapable():
-    try:
-        import PIL              # pylint: disable=W0611,W0612
-        return False
-    except ImportError:
-        return True
+import sys
 
+from avocado import Test
+from avocado.core.job import Job
+from avocado.core.suite import TestSuite
+
+
+class PassTest(Test):
+    def test1(self):
+        config = {'core.show': ['none'],
+                  'run.references': ['/bin/true']}
+        suite = TestSuite.from_config(config)
+        with Job(config, [suite]) as j:
+            j.run()
+
+    def test2(self):
+        config = {'core.show': ['app'],
+                  'run.references': ['/bin/true']}
+        suite = TestSuite.from_config(config)
+        with Job(config, [suite]) as j:
+            j.run()
+
+    def test3(self):
+        config = {'core.show': ['none'],
+                  'run.references': ['/bin/true']}
+        suite = TestSuite.from_config(config)
+        with Job(config, [suite]) as j:
+            j.run()
+
+
+if __name__ == '__main__':
+    config = {'run.references': [__file__],
+              'core.show': ['app']}
+    suite = TestSuite.from_config(config)
+    with Job(config, [suite]) as j:
+        sys.exit(j.run())
+"""
 
 def perl_tap_parser_uncapable():
     return os.system("perl -e 'use TAP::Parser;'") != 0
@@ -130,17 +174,13 @@ def missing_binary(binary):
         return True
 
 
-class OutputTest(unittest.TestCase):
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        os.chdir(BASEDIR)
+class OutputTest(TestCaseTmpDir):
 
     @unittest.skipIf(missing_binary('cc'),
                      "C compiler is required by the underlying doublefree.py test")
     def test_output_doublefree(self):
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    'doublefree.py' % (AVOCADO, self.tmpdir))
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
+                    'doublefree.py' % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         output = result.stdout + result.stderr
@@ -170,11 +210,11 @@ class OutputTest(unittest.TestCase):
                              "order.\n%s" % (i, exps_text, name,
                                              output_file_content))
                 self.assertEqual(i, end, error_msg)
-        test = script.Script(os.path.join(self.tmpdir, "output_test.py"),
+        test = script.Script(os.path.join(self.tmpdir.name, "output_test.py"),
                              OUTPUT_TEST_CONTENT)
         test.save()
-        result = process.run("%s run --job-results-dir %s --sysinfo=off "
-                             "--json - -- %s" % (AVOCADO, self.tmpdir, test))
+        result = process.run("%s run --job-results-dir %s --disable-sysinfo "
+                             "--json - -- %s" % (AVOCADO, self.tmpdir.name, test))
         res = json.loads(result.stdout_text)
         joblog = res["debuglog"]
         exps = [b"[stdout] top_print", b"[stdout] top_stdout",
@@ -198,9 +238,9 @@ class OutputTest(unittest.TestCase):
         # the correct fix is to run the entire test process with redirected
         # stdout and stderr, and *not* play with sys.stdout and sys.stderr.
         # But this change will come later
-        result = process.run("%s run --job-results-dir %s --sysinfo=off "
+        result = process.run("%s run --job-results-dir %s --disable-sysinfo "
                              "--output-check-record=combined "
-                             "--json - -- %s" % (AVOCADO, self.tmpdir, test))
+                             "--json - -- %s" % (AVOCADO, self.tmpdir.name, test))
         res = json.loads(result.stdout_text)
         testdir = res["tests"][0]["logdir"]
         with open(os.path.join(testdir, "output")) as output_file:
@@ -220,12 +260,12 @@ class OutputTest(unittest.TestCase):
         meaning that it will explicitly disable output check record when
         asked to do so.
         """
-        with script.Script(os.path.join(self.tmpdir, "output_mode_none.py"),
+        with script.Script(os.path.join(self.tmpdir.name, "output_mode_none.py"),
                            OUTPUT_MODE_NONE_CONTENT,
                            script.READ_ONLY_MODE) as test:
-            command = ("%s run --job-results-dir %s --sysinfo=off "
+            command = ("%s run --job-results-dir %s --disable-sysinfo "
                        "--json - --output-check-record none -- %s") % (AVOCADO,
-                                                                       self.tmpdir,
+                                                                       self.tmpdir.name,
                                                                        test.path)
             result = process.run(command)
             res = json.loads(result.stdout_text)
@@ -244,11 +284,11 @@ class OutputTest(unittest.TestCase):
         This control is defined as an API parameter, `allow_output_check`, so
         it should be possible to enable/disable it on each call.
         """
-        with script.Script(os.path.join(self.tmpdir, "test_check_on_off.py"),
+        with script.Script(os.path.join(self.tmpdir.name, "test_check_on_off.py"),
                            OUTPUT_CHECK_ON_OFF_CONTENT,
                            script.READ_ONLY_MODE) as test:
-            command = ("%s run --job-results-dir %s --sysinfo=off "
-                       "--json - -- %s") % (AVOCADO, self.tmpdir, test.path)
+            command = ("%s run --job-results-dir %s --disable-sysinfo "
+                       "--json - -- %s") % (AVOCADO, self.tmpdir.name, test.path)
             result = process.run(command)
             res = json.loads(result.stdout_text)
             testdir = res["tests"][0]["logdir"]
@@ -263,15 +303,27 @@ class OutputTest(unittest.TestCase):
                 self.assertEqual(stderr.read(),
                                  '__STDERR_CONTENT____STDERR_DO_RECORD_CONTENT__')
 
+    @skipUnlessPathExists('/bin/true')
+    def test_show(self):
+        """
+        Checks if `core.show` is respected in different configurations.
+        """
+        with script.Script(os.path.join(self.tmpdir.name, "test_show.py"),
+                           OUTPUT_SHOW_TEST, script.READ_ONLY_MODE) as test:
+            cmd = "%s run %s" % (AVOCADO, test.path)
+            result = process.run(cmd)
+            expected_job_id_number = 2
+            expected_bin_true_number = 1
+            job_id_number = result.stdout_text.count('JOB ID')
+            bin_true_number = result.stdout_text.count('/bin/true')
+            self.assertEqual(expected_job_id_number, job_id_number)
+            self.assertEqual(expected_bin_true_number, bin_true_number)
+
     def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
 
-class OutputPluginTest(unittest.TestCase):
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        os.chdir(BASEDIR)
+class OutputPluginTest(TestCaseTmpDir):
 
     def check_output_files(self, debug_log):
         base_dir = os.path.dirname(debug_log)
@@ -294,43 +346,40 @@ class OutputPluginTest(unittest.TestCase):
         self.assertIn("\n# debug.log of ", tap)
 
     def test_output_incompatible_setup(self):
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    '--xunit - --json - passtest.py' % (AVOCADO, self.tmpdir))
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
+                    '--xunit - --json - passtest.py' % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_FAIL
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
                          (expected_rc, result))
-        error_regex = re.compile(r'avocado run: error: argument ((--json)|'
-                                 '(--xunit)): Options ((--xunit --json)|'
+        error_regex = re.compile(r'.*Options ((--xunit --json)|'
                                  '(--json --xunit)) are trying to use stdout '
-                                 'simultaneously\n')
+                                 'simultaneously.', re.MULTILINE | re.DOTALL)
         self.assertIsNotNone(error_regex.match(result.stderr_text),
                              "Missing error message from output:\n%s" %
                              result.stderr)
 
     def test_output_compatible_setup(self):
-        tmpfile = tempfile.mktemp(dir=self.tmpdir)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+        tmpfile = tempfile.mktemp(dir=self.tmpdir.name)
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
                     '--journal --xunit %s --json - passtest.py' %
-                    (AVOCADO, self.tmpdir, tmpfile))
+                    (AVOCADO, self.tmpdir.name, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
-        output = result.stdout_text + result.stderr_text
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
                          (expected_rc, result))
         # Check if we are producing valid outputs
-        json.loads(output)
+        json.loads(result.stdout_text)
         minidom.parse(tmpfile)
 
     def test_output_compatible_setup_2(self):
-        tmpfile = tempfile.mktemp(dir=self.tmpdir)
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+        tmpfile = tempfile.mktemp(dir=self.tmpdir.name)
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
                     '--xunit - --json %s --tap-include-logs passtest.py'
-                    % (AVOCADO, self.tmpdir, tmpfile))
+                    % (AVOCADO, self.tmpdir.name, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
-        output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
@@ -340,22 +389,22 @@ class OutputPluginTest(unittest.TestCase):
             json_results = json.load(fp)
             debug_log = json_results['debuglog']
             self.check_output_files(debug_log)
-        minidom.parseString(output)
+        minidom.parseString(result.stdout_text)
 
     def test_output_compatible_setup_nooutput(self):
-        tmpfile = tempfile.mktemp(dir=self.tmpdir)
-        tmpfile2 = tempfile.mktemp(dir=self.tmpdir)
-        # Verify --silent can be supplied as app argument
-        cmd_line = ('%s --silent run --job-results-dir %s '
-                    '--sysinfo=off --xunit %s --json %s --tap-include-logs '
-                    'passtest.py' % (AVOCADO, self.tmpdir, tmpfile, tmpfile2))
+        tmpfile = tempfile.mktemp(dir=self.tmpdir.name)
+        tmpfile2 = tempfile.mktemp(dir=self.tmpdir.name)
+        # Verify --show=none can be supplied as app argument
+        cmd_line = ('%s --show=none run --job-results-dir %s '
+                    '--disable-sysinfo --xunit %s --json %s --tap-include-logs '
+                    'passtest.py' % (AVOCADO, self.tmpdir.name, tmpfile, tmpfile2))
         result = process.run(cmd_line, ignore_status=True)
-        output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
                          (expected_rc, result))
-        self.assertEqual(output, b"", "Output is not empty:\n%s" % output)
+        self.assertEqual(result.stdout, b"",
+                         "Output is not empty:\n%s" % result.stdout)
         # Check if we are producing valid outputs
         with open(tmpfile2, 'r') as fp:
             json_results = json.load(fp)
@@ -366,8 +415,8 @@ class OutputPluginTest(unittest.TestCase):
     def test_nonprintable_chars(self):
         cmd_line = ("%s run --external-runner /bin/ls "
                     "'NON_EXISTING_FILE_WITH_NONPRINTABLE_CHARS_IN_HERE\x1b' "
-                    "--job-results-dir %s --sysinfo=off --tap-include-logs"
-                    % (AVOCADO, self.tmpdir))
+                    "--job-results-dir %s --disable-sysinfo --tap-include-logs"
+                    % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout_text + result.stderr_text
         expected_rc = exit_codes.AVOCADO_TESTS_FAIL
@@ -383,9 +432,9 @@ class OutputPluginTest(unittest.TestCase):
                         % output)
         self.check_output_files(debug_log)
 
-    def test_show_job_log(self):
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
-                    'passtest.py --show-job-log' % (AVOCADO, self.tmpdir))
+    def test_show_test(self):
+        cmd_line = ('%s --show=test run --job-results-dir %s --disable-sysinfo '
+                    'passtest.py' % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -398,23 +447,22 @@ class OutputPluginTest(unittest.TestCase):
         job_id = job_id_list[0]
         self.assertEqual(len(job_id), 40)
 
-    def test_silent_trumps_show_job_log(self):
-        # Also verify --silent can be supplied as run option
-        cmd_line = ('%s run --silent --job-results-dir %s '
-                    '--sysinfo=off passtest.py --show-job-log'
-                    % (AVOCADO, self.tmpdir))
+    def test_silent_trumps_test(self):
+        # Also verify --show=none can be supplied as run option
+        cmd_line = ('%s --show=test --show=none run --job-results-dir %s '
+                    '--disable-sysinfo passtest.py'
+                    % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
-        output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
                          (expected_rc, result))
-        self.assertEqual(output, b"")
+        self.assertEqual(result.stdout, b"")
 
     def test_default_enabled_plugins(self):
-        cmd_line = ('%s run --job-results-dir %s --sysinfo=off '
+        cmd_line = ('%s run --job-results-dir %s --disable-sysinfo '
                     '--tap-include-logs passtest.py'
-                    % (AVOCADO, self.tmpdir))
+                    % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         output = result.stdout_text + result.stderr_text
         expected_rc = exit_codes.AVOCADO_ALL_OK
@@ -426,20 +474,20 @@ class OutputPluginTest(unittest.TestCase):
         # with an optional 7th line when the HTML report generation is enabled
         self.assertGreaterEqual(len(output_lines), 6,
                                 ('Basic human interface did not produce the '
-                                 'expect output. Output produced: "%s"' % output))
+                                 'expected output. Output produced: "%s"' % output))
         second_line = output_lines[1]
         debug_log = second_line.split()[-1]
         self.check_output_files(debug_log)
 
     def test_verify_whiteboard_save(self):
-        tmpfile = tempfile.mktemp(dir=self.tmpdir)
-        config = os.path.join(self.tmpdir, "conf.ini")
+        tmpfile = tempfile.mktemp(dir=self.tmpdir.name)
+        config = os.path.join(self.tmpdir.name, "conf.ini")
         content = ("[datadir.paths]\nlogs_dir = %s"
-                   % os.path.relpath(self.tmpdir, "."))
+                   % os.path.relpath(self.tmpdir.name, "."))
         script.Script(config, content).save()
         cmd_line = ('%s --config %s --show all run '
-                    '--sysinfo=off whiteboard.py --json %s'
-                    % (AVOCADO, config, tmpfile))
+                    '--job-results-dir %s --disable-sysinfo whiteboard.py '
+                    '--json %s' % (AVOCADO, config, self.tmpdir.name, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -453,13 +501,11 @@ class OutputPluginTest(unittest.TestCase):
             self.assertTrue(os.path.exists(whiteboard_path),
                             'Missing whiteboard file %s' % whiteboard_path)
 
-    @unittest.skipIf(image_output_uncapable(),
-                     "Uncapable of generating images with PIL library")
     def test_gendata(self):
-        tmpfile = tempfile.mktemp(dir=self.tmpdir)
+        tmpfile = tempfile.mktemp(dir=self.tmpdir.name)
         cmd_line = ("%s run --job-results-dir %s "
-                    "--sysinfo=off gendata.py --json %s" %
-                    (AVOCADO, self.tmpdir, tmpfile))
+                    "--disable-sysinfo gendata.py --json %s" %
+                    (AVOCADO, self.tmpdir.name, tmpfile))
         result = process.run(cmd_line, ignore_status=True)
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
@@ -467,39 +513,30 @@ class OutputPluginTest(unittest.TestCase):
                          (expected_rc, result))
         with open(tmpfile, 'r') as fp:
             json_results = json.load(fp)
-            bsod_dir = None
             json_dir = None
-            for test in json_results['tests']:
-                if "test_bsod" in test['id']:
-                    bsod_dir = test['logfile']
-                elif "test_json" in test['id']:
-                    json_dir = test['logfile']
-            self.assertTrue(bsod_dir, "Failed to get test_bsod output "
-                            "directory")
+            test = json_results['tests'][0]
+            if "test_json" in test['id']:
+                json_dir = test['logfile']
+
             self.assertTrue(json_dir, "Failed to get test_json output "
                             "directory")
-            bsod_dir = os.path.join(os.path.dirname(bsod_dir), "data",
-                                    "bsod.png")
             json_dir = os.path.join(os.path.dirname(json_dir), "data",
                                     "test.json")
-            self.assertTrue(os.path.exists(bsod_dir), "File %s produced by"
-                            "test does not exist" % bsod_dir)
             self.assertTrue(os.path.exists(json_dir), "File %s produced by"
                             "test does not exist" % json_dir)
 
     def test_redirect_output(self):
-        redirected_output_path = tempfile.mktemp(dir=self.tmpdir)
+        redirected_output_path = tempfile.mktemp(dir=self.tmpdir.name)
         cmd_line = ('%s run --job-results-dir %s '
-                    '--sysinfo=off passtest.py > %s'
-                    % (AVOCADO, self.tmpdir, redirected_output_path))
+                    '--disable-sysinfo passtest.py > %s'
+                    % (AVOCADO, self.tmpdir.name, redirected_output_path))
         result = process.run(cmd_line, ignore_status=True, shell=True)
-        output = result.stdout + result.stderr
         expected_rc = exit_codes.AVOCADO_ALL_OK
         self.assertEqual(result.exit_status, expected_rc,
                          "Avocado did not return rc %d:\n%s" %
                          (expected_rc, result))
-        self.assertEqual(output, b'',
-                         'After redirecting to file, output is not empty: %s' % output)
+        self.assertEqual(result.stdout, b'',
+                         'After redirecting to file, output is not empty: %s' % result.stdout)
         with open(redirected_output_path, 'r') as redirected_output_file_obj:
             redirected_output = redirected_output_file_obj.read()
             for code in TermSupport.ESCAPE_CODES:
@@ -510,17 +547,25 @@ class OutputPluginTest(unittest.TestCase):
     @unittest.skipIf(perl_tap_parser_uncapable(),
                      "Uncapable of using Perl TAP::Parser library")
     def test_tap_parser(self):
-        perl_script = script.TemporaryScript("tap_parser.pl",
-                                             PERL_TAP_PARSER_SNIPPET
-                                             % self.tmpdir)
-        perl_script.save()
-        process.run("perl %s" % perl_script)
+        with script.TemporaryScript(
+                "tap_parser.pl",
+                PERL_TAP_PARSER_SNIPPET % self.tmpdir.name,
+                self.tmpdir.name) as perl_script:
+            process.run("perl %s" % perl_script)
+
+    @unittest.skipIf(perl_tap_parser_uncapable(),
+                     "Uncapable of using Perl TAP::Parser library")
+    def test_tap_parser_failfast(self):
+        with script.TemporaryScript(
+                "tap_parser.pl",
+                PERL_TAP_PARSER_FAILFAST_SNIPPET % self.tmpdir.name,
+                self.tmpdir.name) as perl_script:
+            process.run("perl %s" % perl_script)
 
     def test_tap_totaltests(self):
-        cmd_line = ("%s run passtest.py "
-                    "-m examples/tests/sleeptest.py.data/sleeptest.yaml "
+        cmd_line = ("%s run passtest.py passtest.py passtest.py passtest.py "
                     "--job-results-dir %s "
-                    "--tap -" % (AVOCADO, self.tmpdir))
+                    "--tap -" % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line)
         expr = b'1..4'
         self.assertIn(expr, result.stdout, "'%s' not found in:\n%s"
@@ -540,17 +585,17 @@ class OutputPluginTest(unittest.TestCase):
 
     def test_results_plugins_no_tests(self):
         cmd_line = ("%s run UNEXISTING --job-results-dir %s"
-                    % (AVOCADO, self.tmpdir))
+                    % (AVOCADO, self.tmpdir.name))
         result = process.run(cmd_line, ignore_status=True)
         self.assertEqual(result.exit_status, exit_codes.AVOCADO_JOB_FAIL)
 
-        xunit_results = os.path.join(self.tmpdir, 'latest', 'results.xml')
+        xunit_results = os.path.join(self.tmpdir.name, 'latest', 'results.xml')
         self.assertFalse(os.path.exists(xunit_results))
 
-        json_results = os.path.join(self.tmpdir, 'latest', 'results.json')
+        json_results = os.path.join(self.tmpdir.name, 'latest', 'results.json')
         self.assertFalse(os.path.exists(json_results))
 
-        tap_results = os.path.join(self.tmpdir, 'latest', 'results.tap')
+        tap_results = os.path.join(self.tmpdir.name, 'latest', 'results.tap')
         self.assertFalse(os.path.exists(tap_results))
 
         # Check that no UI output was generated
@@ -559,9 +604,6 @@ class OutputPluginTest(unittest.TestCase):
 
         # Check that plugins do not produce errors
         self.assertNotIn(b"Error running method ", result.stderr)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir)
 
 
 if __name__ == '__main__':

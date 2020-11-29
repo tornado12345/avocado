@@ -15,10 +15,9 @@
 HTML output module.
 """
 
+import base64
 import codecs
-import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -27,11 +26,12 @@ import jinja2 as jinja
 
 from avocado.core import exit_codes
 from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import CLI, Result
+from avocado.core.plugin_interfaces import CLI, Init, Result
+from avocado.core.settings import settings
 from avocado.utils import astring
 
 
-class ReportModel(object):
+class ReportModel:
 
     """
     Prepares an object that can be passed up to mustache for rendering.
@@ -63,9 +63,24 @@ class ReportModel(object):
             sysinfo_contents = "Error reading %s: %s" % (sysinfo_path, details)
         return sysinfo_contents
 
+    @staticmethod
+    def _icon_data(icon_name):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               'templates', 'images', icon_name), 'rb') as icon:
+            icon_base64 = base64.b64encode(icon.read()).decode()
+        return icon_base64
+
     @property
     def hostname(self):
         return self._get_sysinfo('hostname').strip()
+
+    @property
+    def logs_icon(self):
+        return self._icon_data('logs_icon.svg')
+
+    @property
+    def whiteboard_icon(self):
+        return self._icon_data('whiteboard_icon.svg')
 
     @property
     def tests(self):
@@ -113,19 +128,11 @@ class ReportModel(object):
             formatted['time_start'] = time.strftime("%Y-%m-%d %H:%M:%S",
                                                     local_time_start)
             formatted['row_class'] = mapping[tst['status']]
-            exhibition_limit = 40
+            formatted['whiteboard'] = tst.get('whiteboard', '')
             fail_reason = tst.get('fail_reason')
             if fail_reason is None:
-                fail_reason = '<unknown>'
+                fail_reason = ''
             fail_reason = astring.to_text(fail_reason)
-            if len(fail_reason) > exhibition_limit:
-                fail_reason = ('<a data-container="body" '
-                               'data-toggle="popover" '
-                               'data-placement="top" '
-                               'title="Error Details" '
-                               'data-content="%s">%s...</a>' %
-                               (fail_reason,
-                                fail_reason[:exhibition_limit]))
             formatted['fail_reason'] = fail_reason
             test_info.append(formatted)
         return test_info
@@ -156,9 +163,9 @@ class ReportModel(object):
                     sysinfo_dict['contents'] = sysinfo_file.read()
             except (OSError, UnicodeDecodeError) as details:
                 path = os.path.relpath(sysinfo_path, self.html_output_dir)
-                sysinfo_dict['err'] = ("Error reading sysinfo file, check out"
-                                       "the file <a href=%s>%s</a>: %s"
-                                       % (path, path, details))
+                sysinfo_dict['err'] = "Error reading sysinfo file"
+                sysinfo_dict['err_file'] = path
+                sysinfo_dict['err_details'] = details
             sysinfo_list.append(sysinfo_dict)
             s_id += 1
         return sysinfo_list
@@ -195,7 +202,7 @@ class HTMLResult(Result):
             setsid = getattr(os, 'setpgrp', None)
         inout = open(os.devnull, "r+")
         cmd = ['xdg-open', html_path]
-        subprocess.Popen(cmd, close_fds=True, stdin=inout,
+        subprocess.Popen(cmd, close_fds=True, stdin=inout,  # pylint: disable=W1509
                          stdout=inout, stderr=inout,
                          preexec_fn=setsid)
 
@@ -211,27 +218,63 @@ class HTMLResult(Result):
             report_file.write(report_contents)
 
     def render(self, result, job):
-        if job.status == "RUNNING":
-            return  # Don't create results on unfinished jobs
-        if not (hasattr(job.args, 'html_job_result') or
-                hasattr(job.args, 'html_output')):
+        if job.status in ("RUNNING", "ERROR", "FAIL"):
+            return  # Don't create results on unfinished or errored jobs
+        if not (job.config.get('job.run.result.html.enabled') or
+                job.config.get('job.run.result.html.output')):
             return
 
-        open_browser = getattr(job.args, 'open_browser', False)
-        if getattr(job.args, 'html_job_result', 'off') == 'on':
+        open_browser = job.config.get('job.run.result.html.open_browser', False)
+        if job.config.get('job.run.result.html.enabled'):
             html_path = os.path.join(job.logdir, 'results.html')
             self._render(result, html_path)
-            if getattr(job.args, 'stdout_claimed_by', None) is None:
+            if job.config.get('stdout_claimed_by', None) is None:
                 LOG_UI.info("JOB HTML   : %s", html_path)
             if open_browser:
                 self._open_browser(html_path)
                 open_browser = False
 
-        html_path = getattr(job.args, 'html_output', 'None')
+        html_path = job.config.get('job.run.result.html.output', None)
         if html_path is not None:
             self._render(result, html_path)
             if open_browser:
                 self._open_browser(html_path)
+
+
+class HTMLInit(Init):
+
+    name = 'htmlresult'
+    description = "HTML job report options initialization"
+
+    def initialize(self):
+        section = 'job.run.result.html'
+        help_msg = ('Enable HTML output to the FILE where the result should '
+                    'be written. The value - (output to stdout) is not '
+                    'supported since not all HTML resources can be embedded '
+                    'into a single file (page resources will be copied to '
+                    'the output file dir)')
+        settings.register_option(section=section,
+                                 key='output',
+                                 default=None,
+                                 help_msg=help_msg)
+
+        help_msg = ('Open the generated report on your preferred browser. '
+                    'This works even if --html was not explicitly passed, '
+                    'since an HTML report is always generated on the job '
+                    'results dir.')
+        settings.register_option(section=section,
+                                 key='open_browser',
+                                 key_type=bool,
+                                 default=False,
+                                 help_msg=help_msg)
+
+        help_msg = ('Enables default HTML result in the job results '
+                    'directory. File will be named "results.html".')
+        settings.register_option(section=section,
+                                 key='enabled',
+                                 key_type=bool,
+                                 default=True,
+                                 help_msg=help_msg)
 
 
 class HTML(CLI):
@@ -248,32 +291,24 @@ class HTML(CLI):
         if run_subcommand_parser is None:
             return
 
-        run_subcommand_parser.output.add_argument(
-            '--html', type=str,
-            dest='html_output', metavar='FILE',
-            help=('Enable HTML output to the FILE where the result should be '
-                  'written. The value - (output to stdout) is not supported '
-                  'since not all HTML resources can be embedded into a '
-                  'single file (page resources will be copied to the '
-                  'output file dir)'))
-        run_subcommand_parser.output.add_argument(
-            '--open-browser',
-            dest='open_browser',
-            action='store_true',
-            default=False,
-            help='Open the generated report on your preferred browser. '
-                 'This works even if --html was not explicitly passed, '
-                 'since an HTML report is always generated on the job '
-                 'results dir. Current: %s' % False)
+        settings.add_argparser_to_option(
+            namespace='job.run.result.html.output',
+            parser=run_subcommand_parser,
+            metavar='FILE',
+            long_arg='--html')
 
-        run_subcommand_parser.output.add_argument(
-            '--html-job-result', dest='html_job_result',
-            choices=('on', 'off'), default='on',
-            help=('Enables default HTML result in the job results directory. '
-                  'File will be located at "html/results.html".'))
+        settings.add_argparser_to_option(
+            namespace='job.run.result.html.open_browser',
+            parser=run_subcommand_parser,
+            long_arg='--open-browser')
 
-    def run(self, args):
-        if 'html_output' in args and args.html_output == '-':
+        settings.add_argparser_to_option(
+            namespace='job.run.result.html.enabled',
+            parser=run_subcommand_parser,
+            long_arg='--disable-html-job-result')
+
+    def run(self, config):
+        if config.get('job.run.result.html.output') == '-':
             LOG_UI.error('HTML to stdout not supported (not all HTML resources'
                          ' can be embedded on a single file)')
             sys.exit(exit_codes.AVOCADO_JOB_FAIL)

@@ -1,31 +1,18 @@
 import logging
 import os
-import pkg_resources
 import sys
-import unittest.mock
+import tempfile
+import unittest
 
+import pkg_resources
 
 #: The base directory for the avocado source tree
-BASEDIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+BASEDIR = os.path.dirname(os.path.abspath(__file__))
+BASEDIR = os.path.abspath(os.path.join(BASEDIR, os.path.pardir))
 
 #: The name of the avocado test runner entry point
 AVOCADO = os.environ.get("UNITTEST_AVOCADO_CMD",
-                         "%s ./scripts/avocado" % sys.executable)
-
-
-def recent_mock():
-    '''
-    Checks if a recent and capable enough mock library is available
-
-    On Python 3, mock from the standard library is used, but Python
-    3.6 or later is required.
-
-    Also, it assumes that on a future Python major version, functionality
-    won't regress.
-    '''
-    if sys.version_info[0] == 3:
-        return sys.version_info[1] >= 6
-    return sys.version_info[0] > 3
+                         "%s -m avocado" % sys.executable)
 
 
 def python_module_available(module_name):
@@ -59,6 +46,44 @@ def setup_avocado_loggers():
             logger.handlers.append(logging.NullHandler())
 
 
+def temp_dir_prefix(module_name, klass, method):
+    """
+    Returns a standard name for the temp dir prefix used by the tests
+    """
+    fmt = 'avocado__%s__%s__%s__'
+    return fmt % (module_name, klass.__class__.__name__, method)
+
+
+def get_temporary_config(module_name, klass, method):
+    """
+    Creates a temporary bogus config file
+    returns base directory, dictionary containing the temporary data dir
+    paths and the configuration file contain those same settings
+    """
+    prefix = temp_dir_prefix(module_name, klass, method)
+    base_dir = tempfile.TemporaryDirectory(prefix=prefix)
+    test_dir = os.path.join(base_dir.name, 'tests')
+    os.mkdir(test_dir)
+    data_directory = os.path.join(base_dir.name, 'data')
+    os.mkdir(data_directory)
+    cache_dir = os.path.join(data_directory, 'cache')
+    os.mkdir(cache_dir)
+    mapping = {'base_dir': base_dir.name,
+               'test_dir': test_dir,
+               'data_dir': data_directory,
+               'logs_dir': os.path.join(base_dir.name, 'logs'),
+               'cache_dir': cache_dir}
+    temp_settings = ('[datadir.paths]\n'
+                     'base_dir = %(base_dir)s\n'
+                     'test_dir = %(test_dir)s\n'
+                     'data_dir = %(data_dir)s\n'
+                     'logs_dir = %(logs_dir)s\n') % mapping
+    config_file = tempfile.NamedTemporaryFile('w', delete=False)
+    config_file.write(temp_settings)
+    config_file.close()
+    return base_dir, mapping, config_file
+
+
 #: The plugin module names and directories under optional_plugins
 PLUGINS = {'varianter_yaml_to_mux': 'avocado-framework-plugin-varianter-yaml-to-mux',
            'runner_remote': 'avocado-framework-plugin-runner-remote',
@@ -85,7 +110,7 @@ def test_suite(base_selftests=True, plugin_selftests=None):
     selftests_dir = os.path.dirname(os.path.abspath(__file__))
     basedir = os.path.dirname(selftests_dir)
     if base_selftests:
-        for section in ('unit', 'functional', 'doc'):
+        for section in ('unit', 'functional'):
             start_dir = os.path.join(selftests_dir, section)
             suite.addTests(loader.discover(start_dir=start_dir,
                                            top_level_dir=basedir))
@@ -98,3 +123,26 @@ def test_suite(base_selftests=True, plugin_selftests=None):
                                 plugin_dir, 'tests')
             suite.addTests(loader.discover(start_dir=path, top_level_dir=path))
     return suite
+
+
+def skipOnLevelsInferiorThan(level):
+    return unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < level,
+                           "Skipping test that take a long time to run, are "
+                           "resource intensive or time sensitve")
+
+
+def skipUnlessPathExists(path):
+    return unittest.skipUnless(os.path.exists(path),
+                               ('File or directory at path "%s" used in test is'
+                                ' not available in the system' % path))
+
+
+class TestCaseTmpDir(unittest.TestCase):
+
+    def setUp(self):
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
+        os.chdir(BASEDIR)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()

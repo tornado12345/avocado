@@ -17,15 +17,16 @@ cloudinit configuration support
 
 This module can be easily used with :mod:`avocado.utils.vmimage`,
 to configure operating system images via the cloudinit tooling.
+
+:see: http://cloudinit.readthedocs.io.
 """
 
-from six.moves import BaseHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from . import astring
-from . import iso9660
-
+from . import astring, iso9660
 
 #: The meta-data file template
+#:
 #: Positional template variables are: instance-id, hostname
 METADATA_TEMPLATE = """instance-id: {0}
 hostname: {1}
@@ -35,6 +36,7 @@ hostname: {1}
 USERDATA_HEADER = "#cloud-config"
 
 #: A username configuration as per cloudinit/config/cc_set_passwords.py
+#:
 #: Positional template variables : username
 USERNAME_TEMPLATE = """
 ssh_pwauth: True
@@ -45,7 +47,8 @@ system_info:
 """
 
 #: A username configuration as per cloudinit/config/cc_set_passwords.py
-#: Positional template variables : password
+#:
+#: Positional template variables are: password
 PASSWORD_TEMPLATE = """
 password: {0}
 chpasswd:
@@ -53,12 +56,15 @@ chpasswd:
 """
 
 #: An authorized key configuration for the default user
+#:
+#: Positional template variables are: ssh_authorized_keys
 AUTHORIZED_KEY_TEMPLATE = """
 ssh_authorized_keys:
   - {0}
 """
 
 #: A phone home configuration that will post just the instance id
+#:
 #: Positional template variables are: address, port
 PHONE_HOME_TEMPLATE = """
 phone_home:
@@ -120,9 +126,14 @@ def iso(output_path, instance_id, username=None, password=None,
     out.close()
 
 
-class PhoneHomeServerHandler(BaseHTTPServer.BaseHTTPRequestHandler):
+class PhoneHomeServerHandler(BaseHTTPRequestHandler):
+    """Handles HTTP requests to the phone home server."""
 
     def do_POST(self):
+        """Handles an HTTP POST request.
+
+        Respond with status 200 if the instance phoned back.
+        """
         path = self.path[1:]
         if path[-1] == '/':
             path = path[:-1]
@@ -130,14 +141,30 @@ class PhoneHomeServerHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             self.server.instance_phoned_back = True
         self.send_response(200)
 
-    def log_message(self, format_, *args):
-        pass
+    def log_message(self, format_, *args):  # pylint: disable=W0221
+        """Logs an arbitrary message.
+
+        :note: It currently disables any message logging.
+        """
 
 
-class PhoneHomeServer(BaseHTTPServer.HTTPServer):
+class PhoneHomeServer(HTTPServer):
+    """Implements the phone home HTTP server.
+
+    Wait the phone home from a given instance.
+    """
 
     def __init__(self, address, instance_id):
-        BaseHTTPServer.HTTPServer.__init__(self, address, PhoneHomeServerHandler)
+        """Initialize the server.
+
+        :param address: a hostname or IP address and port, in the same format
+                        given to socket and other servers
+        :type address: tuple
+        :param instance_id: the identification for the instance that should be
+                            calling back, and the condition for the wait to end
+        :type instance_id: str
+        """
+        HTTPServer.__init__(self, address, PhoneHomeServerHandler)
         self.instance_id = instance_id
         self.instance_phoned_back = False
 

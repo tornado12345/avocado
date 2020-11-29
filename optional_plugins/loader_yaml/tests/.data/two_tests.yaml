@@ -1,5 +1,0 @@
-!mux
-instrumented:
-    test_reference: passtest.py
-simple:
-    test_reference: passtest.sh

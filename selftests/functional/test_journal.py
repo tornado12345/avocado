@@ -1,24 +1,21 @@
-import os
 import json
+import os
 import sqlite3
-import tempfile
-import shutil
 import unittest
 
 from avocado.core import exit_codes
 from avocado.utils import process
 
-from .. import AVOCADO, BASEDIR
+from .. import AVOCADO, TestCaseTmpDir
 
 
-class JournalPluginTests(unittest.TestCase):
+class JournalPluginTests(TestCaseTmpDir):
 
     def setUp(self):
-        os.chdir(BASEDIR)
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.cmd_line = ('%s run --job-results-dir %s --sysinfo=off --json - '
+        super(JournalPluginTests, self).setUp()
+        self.cmd_line = ('%s run --job-results-dir %s --disable-sysinfo --json - '
                          '--journal examples/tests/passtest.py'
-                         % (AVOCADO, self.tmpdir))
+                         % (AVOCADO, self.tmpdir.name))
         self.result = process.run(self.cmd_line, ignore_status=True)
         data = json.loads(self.result.stdout_text)
         self.job_id = data['job_id']
@@ -50,7 +47,7 @@ class JournalPluginTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.close()
-        shutil.rmtree(self.tmpdir)
+        super(JournalPluginTests, self).tearDown()
 
 
 if __name__ == '__main__':

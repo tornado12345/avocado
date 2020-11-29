@@ -1,44 +1,33 @@
 ifndef PYTHON
-PYTHON=$(shell which python3 2>/dev/null || which python2 2>/dev/null || which python 2>/dev/null)
+PYTHON=$(shell which python3 2>/dev/null || which python 2>/dev/null)
 endif
 VERSION=$(shell $(PYTHON) setup.py --version 2>/dev/null)
 PYTHON_DEVELOP_ARGS=$(shell if ($(PYTHON) setup.py develop --help 2>/dev/null | grep -q '\-\-user'); then echo "--user"; else echo ""; fi)
 DESTDIR=/
-AVOCADO_DIRNAME=$(shell echo $${PWD\#\#*/})
+AVOCADO_DIRNAME=$(shell basename ${PWD})
 AVOCADO_EXTERNAL_PLUGINS=$(filter-out ../$(AVOCADO_DIRNAME), $(shell find ../ -maxdepth 1 -mindepth 1 -type d))
-# List of optional plugins that have to be in setup in a giver order
-# because there may be depedencies between plugins
-AVOCADO_OPTIONAL_PLUGINS_ORDERED="./optional_plugins/runner_remote"
-# Other optional plugins found in "optional_plugins" directory
-AVOCADO_OPTIONAL_PLUGINS_OTHERS=$(shell find ./optional_plugins -maxdepth 1 -mindepth 1 -type d)
-# Unique list of optional plugins
-AVOCADO_OPTIONAL_PLUGINS=$(shell (echo "$(AVOCADO_OPTIONAL_PLUGINS_ORDERED) $(AVOCADO_OPTIONAL_PLUGINS_OTHERS)" | tr ' ' '\n' | awk '!a[$$0]++'))
+AVOCADO_OPTIONAL_PLUGINS=$(shell find ./optional_plugins -maxdepth 1 -mindepth 1 -type d)
 AVOCADO_PLUGINS=$(AVOCADO_OPTIONAL_PLUGINS) $(AVOCADO_EXTERNAL_PLUGINS)
 RELEASE_COMMIT=$(shell git log --pretty=format:'%H' -n 1 $(VERSION))
-RELEASE_SHORT_COMMIT=$(shell git log --pretty=format:'%h' -n 1 $(VERSION))
+RELEASE_SHORT_COMMIT=$(shell git rev-parse --short=9 $(VERSION))
 COMMIT=$(shell git log --pretty=format:'%H' -n 1)
 COMMIT_DATE=$(shell git log --pretty='format:%cd' --date='format:%Y%m%d' -n 1)
-SHORT_COMMIT=$(shell git log --pretty=format:'%h' -n 1)
+SHORT_COMMIT=$(shell git rev-parse --short=9 HEAD)
 MOCK_CONFIG=default
 ARCHIVE_BASE_NAME=avocado
 PYTHON_MODULE_NAME=avocado-framework
 RPM_BASE_NAME=python-avocado
 
-include Makefile.include
 
 all:
 	@echo
 	@echo "Development related targets:"
 	@echo "check:       Runs tree static check, unittests and fast functional tests"
-	@echo "check-full:  Runs tree static check, and all unittests and functional tests"
 	@echo "develop:     Runs 'python setup.py --develop' on this tree alone"
 	@echo "link:        Runs 'python setup.py --develop' in all subprojects and links the needed resources"
 	@echo "clean:       Get rid of scratch, byte files and removes the links to other subprojects"
-	@echo "selfcheck:   Runs tree static check, unittests and functional tests using Avocado itself"
-	@echo "spell:       Runs spell checker on comments and docstrings (requires python-enchant)"
 	@echo
 	@echo "Package requirements related targets"
-	@echo "requirements:            Install runtime requirements"
 	@echo "requirements-selftests:  Install runtime and selftests requirements"
 	@echo "requirements-plugins:    Install plugins requirements"
 	@echo
@@ -57,6 +46,8 @@ all:
 	@echo "rpm-release:        Generate binary RPMs for the latest tagged release"
 	@echo "propagate-version:  Propagate './VERSION' to all plugins/modules"
 	@echo
+
+include Makefile.include
 
 source-pypi: clean
 	if test ! -d PYPI_UPLOAD; then mkdir PYPI_UPLOAD; fi
@@ -102,7 +93,6 @@ clean:
 	$(PYTHON) setup.py clean
 	rm -rf build/ MANIFEST BUILD BUILDROOT SPECS RPMS SRPMS SOURCES PYPI_UPLOAD
 	rm -f man/avocado.1
-	rm -f man/avocado-rest-client.1
 	rm -rf docs/build
 	find docs/source/api/ -name '*.rst' -delete
 	for PLUGIN in $(AVOCADO_PLUGINS); do\
@@ -118,7 +108,7 @@ clean:
 	find . -name '*.pyc' -delete
 	find $(AVOCADO_OPTIONAL_PLUGINS) -name '*.egg-info' -exec rm -r {} +
 
-requirements-plugins: requirements
+requirements-plugins:
 	for PLUGIN in $(AVOCADO_PLUGINS);do\
 		if test -f $$PLUGIN/Makefile; then echo ">> REQUIREMENTS (Makefile) $$PLUGIN"; AVOCADO_DIRNAME=$(AVOCADO_DIRNAME) make -C $$PLUGIN requirements &>/dev/null;\
 		elif test -f $$PLUGIN/requirements.txt; then echo ">> REQUIREMENTS (requirements.txt) $$PLUGIN"; pip install $(PYTHON_DEVELOP_ARGS) -r $$PLUGIN/requirements.txt;\
@@ -130,23 +120,12 @@ requirements-selftests: pip
 	- $(PYTHON) -m pip install -r requirements-selftests.txt
 
 smokecheck: clean develop
-	./scripts/avocado run passtest.py
+	PYTHON=$(PYTHON) $(PYTHON) -m avocado run passtest.py
 
-check: clean develop modules_boundaries
+check: clean develop
 	# Unless manually set, this is equivalent to AVOCADO_CHECK_LEVEL=0
-	PYTHON=$(PYTHON) selftests/checkall
+	PYTHON=$(PYTHON) $(PYTHON) selftests/check.py
 	selftests/check_tmp_dirs
-
-check-full: clean develop modules_boundaries
-	PYTHON=$(PYTHON) AVOCADO_CHECK_LEVEL=2 selftests/checkall
-	selftests/check_tmp_dirs
-
-selfcheck: clean modules_boundaries develop
-	PYTHON=$(PYTHON) AVOCADO_SELF_CHECK=1 selftests/checkall
-	selftests/check_tmp_dirs
-
-modules_boundaries:
-	selftests/modules_boundaries
 
 develop:
 	$(PYTHON) setup.py develop $(PYTHON_DEVELOP_ARGS)
@@ -165,10 +144,7 @@ link: develop
 		else echo ">> SKIP $$PLUGIN"; fi;\
 	done
 
-spell:
-	pylint --errors-only --disable=all --enable=spelling --spelling-dict=en_US --spelling-private-dict-file=spell.ignore * && echo OK
-
-man: man/avocado.1 man/avocado-rest-client.1
+man: man/avocado.1
 
 variables:
 	@echo "PYTHON: $(PYTHON)"
@@ -177,8 +153,6 @@ variables:
 	@echo "DESTDIR: $(DESTDIR)"
 	@echo "AVOCADO_DIRNAME: $(AVOCADO_DIRNAME)"
 	@echo "AVOCADO_EXTERNAL_PLUGINS: $(AVOCADO_EXTERNAL_PLUGINS)"
-	@echo "AVOCADO_OPTIONAL_PLUGINS_ORDERED: $(AVOCADO_OPTIONAL_PLUGINS_ORDERED)"
-	@echo "AVOCADO_OPTIONAL_PLUGINS_OTHERS: $(AVOCADO_OPTIONAL_PLUGINS_OTHERS)"
 	@echo "AVOCADO_OPTIONAL_PLUGINS: $(AVOCADO_OPTIONAL_PLUGINS)"
 	@echo "AVOCADO_PLUGINS: $(AVOCADO_PLUGINS)"
 	@echo "RELEASE_COMMIT: $(RELEASE_COMMIT)"

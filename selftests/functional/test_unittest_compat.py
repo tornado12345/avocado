@@ -1,14 +1,10 @@
 import os
 import sys
-import shutil
-import tempfile
 import unittest
 
-from avocado.utils import script
-from avocado.utils import process
+from avocado.utils import process, script
 
-from .. import BASEDIR
-
+from .. import BASEDIR, TestCaseTmpDir
 
 UNITTEST_GOOD = """from avocado import Test
 from unittest import main
@@ -59,10 +55,10 @@ if __name__ == '__main__':
 """
 
 
-class UnittestCompat(unittest.TestCase):
+class UnittestCompat(TestCaseTmpDir):
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="avocado_" + __name__)
+        super(UnittestCompat, self).setUp()
         self.original_pypath = os.environ.get('PYTHONPATH')
         if self.original_pypath is not None:
             os.environ['PYTHONPATH'] = '%s:%s' % (
@@ -71,17 +67,17 @@ class UnittestCompat(unittest.TestCase):
             os.environ['PYTHONPATH'] = '%s' % BASEDIR
         self.unittest_script_good = script.TemporaryScript(
             'unittest_good.py',
-            UNITTEST_GOOD % self.tmpdir,
+            UNITTEST_GOOD % self.tmpdir.name,
             'avocado_as_unittest_functional')
         self.unittest_script_good.save()
         self.unittest_script_fail = script.TemporaryScript(
             'unittest_fail.py',
-            UNITTEST_FAIL % self.tmpdir,
+            UNITTEST_FAIL % self.tmpdir.name,
             'avocado_as_unittest_functional')
         self.unittest_script_fail.save()
         self.unittest_script_error = script.TemporaryScript(
             'unittest_error.py',
-            UNITTEST_ERROR % self.tmpdir,
+            UNITTEST_ERROR % self.tmpdir.name,
             'avocado_as_unittest_functional')
         self.unittest_script_error.save()
 
@@ -108,10 +104,10 @@ class UnittestCompat(unittest.TestCase):
         self.assertIn(b'FAILED (errors=1)', result.stderr)
 
     def tearDown(self):
+        super(UnittestCompat, self).tearDown()
         self.unittest_script_error.remove()
         self.unittest_script_fail.remove()
         self.unittest_script_good.remove()
-        shutil.rmtree(self.tmpdir)
 
 
 if __name__ == '__main__':

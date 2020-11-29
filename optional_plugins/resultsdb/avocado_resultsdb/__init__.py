@@ -17,17 +17,13 @@ Avocado Plugin to propagate Job results to Resultsdb
 """
 
 import os
-import sys
 import time
 
 import resultsdb_api
-from six import iteritems
 
-from avocado.core.plugin_interfaces import CLI, ResultEvents, Result
-from avocado.core.settings import settings
-from avocado.core import exceptions
-from avocado.utils import stacktrace
 from avocado.core.output import LOG_UI
+from avocado.core.plugin_interfaces import CLI, Result, ResultEvents
+from avocado.core.settings import settings
 
 
 class ResultsdbResultEvent(ResultEvents):
@@ -39,19 +35,14 @@ class ResultsdbResultEvent(ResultEvents):
     name = 'resultsdb'
     description = 'Resultsdb result support'
 
-    def __init__(self, args):
+    def __init__(self, config):
         self.rdbapi = None
-        if getattr(args, 'resultsdb_api', None) is not None:
-            self.rdbapi = resultsdb_api.ResultsDBapi(args.resultsdb_api)
+        resultsdb_api_url = config.get('plugins.resultsdb.api_url')
+        if resultsdb_api_url is not None:
+            self.rdbapi = resultsdb_api.ResultsDBapi(resultsdb_api_url)
 
-        self.rdblogs = None
-        if getattr(args, 'resultsdb_logs', None) is not None:
-            self.rdblogs = args.resultsdb_logs
-
-        self.rdbnote_limit = 0
-        if getattr(args, 'resultsdb_note_limit', None) is not None:
-            self.rdbnote_limit = int(args.resultsdb_note_limit)
-
+        self.rdblogs = config.get('plugins.resultsdb.logs_url')
+        self.rdbnote_limit = config.get('plugins.resultsdb.note_size_limit')
         self.job_id = None
         self.job_logdir = None
 
@@ -160,10 +151,13 @@ class ResultsdbResult(Result):
     description = 'Resultsdb result support'
 
     def render(self, result, job):
-        if (getattr(job.args, 'resultsdb_logs', None) is not None and
-                getattr(job.args, 'stdout_claimed_by', None) is None):
+        resultsdb_logs = job.config.get('plugins.resultsdb.logs_url')
+        stdout_claimed_by = job.config.get('stdout_claimed_by')
+        if (resultsdb_logs is not None and stdout_claimed_by is None):
             log_msg = "JOB URL    : %s/%s"
-            LOG_UI.info(log_msg, job.args.resultsdb_logs, os.path.basename(job.logdir))
+            LOG_UI.info(log_msg,
+                        resultsdb_logs,
+                        os.path.basename(job.logdir))
 
 
 class ResultsdbCLI(CLI):
@@ -182,39 +176,30 @@ class ResultsdbCLI(CLI):
 
         msg = 'resultsdb options'
         parser = run_subcommand_parser.add_argument_group(msg)
-        parser.add_argument('--resultsdb-api',
-                            dest='resultsdb_api', default=None,
-                            help='Specify the resultsdb API url')
-        parser.add_argument('--resultsdb-logs',
-                            dest='resultsdb_logs', default=None,
-                            help='Specify the URL where the logs are published')
-        parser.add_argument('--resultsdb-note-limit',
-                            dest='resultsdb_note_limit', default=None,
-                            help='Maximum note size limit')
+        help_msg = 'Specify the resultsdb API url'
+        settings.register_option(section='plugins.resultsdb',
+                                 key='api_url',
+                                 default=None,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--resultsdb-api')
 
-        self.configured = True
+        help_msg = 'Specify the URL where the logs are published'
+        settings.register_option(section='plugins.resultsdb',
+                                 key='logs_url',
+                                 default=None,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--resultsdb-logs')
 
-    def run(self, args):
-        resultsdb_api_url = getattr(args, 'resultsdb_api', None)
-        if resultsdb_api_url is None:
-            resultsdb_api_url = settings.get_value('plugins.resultsdb',
-                                                   'api_url',
-                                                   default=None)
-            if resultsdb_api_url is not None:
-                args.resultsdb_api = resultsdb_api_url
+        help_msg = 'Maximum note size limit'
+        settings.register_option(section='plugins.resultsdb',
+                                 key='note_size_limit',
+                                 default=0,
+                                 key_type=int,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--resultsdb-note-limit')
 
-        resultsdb_logs = getattr(args, 'resultsdb_logs', None)
-        if resultsdb_logs is None:
-            resultsdb_logs = settings.get_value('plugins.resultsdb',
-                                                'logs_url',
-                                                default=None)
-            if resultsdb_logs is not None:
-                args.resultsdb_logs = resultsdb_logs
-
-        resultsdb_note_limit = getattr(args, 'resultsdb_note_limit', None)
-        if resultsdb_note_limit is None:
-            resultsdb_note_limit = settings.get_value('plugins.resultsdb',
-                                                      'note_size_limit',
-                                                      default=None)
-            if resultsdb_note_limit is not None:
-                args.resultsdb_note_limit = resultsdb_note_limit
+    def run(self, config):
+        pass

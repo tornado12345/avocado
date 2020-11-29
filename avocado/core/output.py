@@ -22,28 +22,21 @@ import re
 import sys
 import traceback
 
-from . import exit_codes
 from ..utils import path as utils_path
+from . import exit_codes
 from .settings import settings
+from .streams import BUILTIN_STREAMS
 
+#: Handle cases of logging exceptions which will lead to recursion error
+logging.raiseExceptions = False
 
 #: Pre-defined Avocado human UI logger
 LOG_UI = logging.getLogger("avocado.app")
 #: Pre-defined Avocado job/test logger
 LOG_JOB = logging.getLogger("avocado.test")
 
-#: Builtin special keywords to enable set of logging streams
-BUILTIN_STREAMS = {'app': 'application output',
-                   'test': 'test output',
-                   'debug': 'tracebacks and other debugging info',
-                   'remote': 'fabric/paramiko debug',
-                   'early':  'early logging of other streams, including test (very verbose)'}
-#: Groups of builtin streams
-BUILTIN_STREAM_SETS = {'all': 'all builtin streams',
-                       'none': 'disables regular output (leaving only errors enabled)'}
 
-
-class TermSupport(object):
+class TermSupport:
 
     COLOR_BLUE = '\033[94m'
     COLOR_GREEN = '\033[92m'
@@ -82,10 +75,17 @@ class TermSupport(object):
         allowed_terms = ['linux', 'xterm', 'xterm-256color', 'vt100', 'screen',
                          'screen-256color', 'screen.xterm-256color']
         term = os.environ.get("TERM")
-        colored = settings.get_value('runner.output', 'colored',
-                                     key_type='bool', default=True)
-        if not colored or not os.isatty(1) or term not in allowed_terms:
+        config = settings.as_dict()
+        colored = config.get('runner.output.colored')
+        force_color = config.get('runner.output.color')
+        if force_color == "never":
             self.disable()
+        elif force_color == "auto":
+            if not colored or not os.isatty(1) or term not in allowed_terms:
+                self.disable()
+        elif force_color != "always":
+            raise ValueError("The value for runner.output.color must be one of "
+                             "'always', 'never', 'auto' and not " + force_color)
 
     def disable(self):
         """
@@ -146,60 +146,82 @@ class TermSupport(object):
         """
         return self.PARTIAL + msg + self.ENDC
 
-    def pass_str(self):
+    def pass_str(self, msg='PASS', move=MOVE_BACK):
         """
         Print a pass string (green colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.PASS + 'PASS' + self.ENDC
+        return move + self.PASS + msg + self.ENDC
 
-    def skip_str(self):
+    def skip_str(self, msg='SKIP', move=MOVE_BACK):
         """
         Print a skip string (yellow colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.SKIP + 'SKIP' + self.ENDC
+        return move + self.SKIP + msg + self.ENDC
 
-    def fail_str(self):
+    def fail_str(self, msg='FAIL', move=MOVE_BACK):
         """
         Print a fail string (red colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.FAIL + 'FAIL' + self.ENDC
+        return move + self.FAIL + msg + self.ENDC
 
-    def error_str(self):
+    def error_str(self, msg='ERROR', move=MOVE_BACK):
         """
         Print a error string (red colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.ERROR + 'ERROR' + self.ENDC
+        return move + self.ERROR + msg + self.ENDC
 
-    def interrupt_str(self):
+    def interrupt_str(self, msg='INTERRUPT', move=MOVE_BACK):
         """
         Print an interrupt string (red colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.INTERRUPT + 'INTERRUPT' + self.ENDC
+        return move + self.INTERRUPT + msg + self.ENDC
 
-    def warn_str(self):
+    def warn_str(self, msg='WARN', move=MOVE_BACK):
         """
         Print an warning string (yellow colored).
 
         If the output does not support colors, just return the original string.
         """
-        return self.MOVE_BACK + self.WARN + 'WARN' + self.ENDC
+        return move + self.WARN + msg + self.ENDC
 
 
 #: Transparently handles colored terminal, when one is used
 TERM_SUPPORT = TermSupport()
 
 
-class _StdOutputFile(object):
+#: A collection of mapping from test statuses to colors to be used
+#: consistently across the various plugins
+TEST_STATUS_MAPPING = {'PASS': TERM_SUPPORT.PASS,
+                       'ERROR': TERM_SUPPORT.ERROR,
+                       'FAIL': TERM_SUPPORT.FAIL,
+                       'SKIP': TERM_SUPPORT.SKIP,
+                       'WARN': TERM_SUPPORT.WARN,
+                       'INTERRUPTED': TERM_SUPPORT.INTERRUPT,
+                       'CANCEL': TERM_SUPPORT.CANCEL}
+
+
+#: A collection of mapping from test status to formatting functions
+#: to be used consistently across the various plugins
+TEST_STATUS_DECORATOR_MAPPING = {'PASS': TERM_SUPPORT.pass_str,
+                                 'ERROR': TERM_SUPPORT.error_str,
+                                 'FAIL': TERM_SUPPORT.fail_str,
+                                 'SKIP': TERM_SUPPORT.skip_str,
+                                 'WARN': TERM_SUPPORT.warn_str,
+                                 'INTERRUPTED': TERM_SUPPORT.interrupt_str,
+                                 'CANCEL': TERM_SUPPORT.skip_str}
+
+
+class _StdOutputFile:
 
     """
     File-like object which stores (_is_stdout, content) into the provided list
@@ -250,7 +272,7 @@ class _StdOutputFile(object):
                           if _[0] == self._is_stdout))
 
 
-class StdOutput(object):
+class StdOutput:
 
     """
     Class to modify sys.stdout/sys.stderr
@@ -261,12 +283,20 @@ class StdOutput(object):
     def __init__(self):
         self.stdout = self._stdout = sys.stdout
         self.stderr = self._stderr = sys.stderr
+        self.__configured = False
 
     def _paginator_in_use(self):
         """
         :return: True when we output into paginator
         """
         return bool(isinstance(sys.stdout, Paginator))
+
+    @property
+    def configured(self):
+        """
+        Determines if a configuration of any sort has been performed
+        """
+        return self.__configured
 
     def print_records(self):
         """
@@ -295,6 +325,7 @@ class StdOutput(object):
         """
         sys.stdout = _StdOutputFile(True, self.records)
         sys.stderr = _StdOutputFile(False, self.records)
+        self.__configured = True
 
     def enable_outputs(self):
         """
@@ -302,6 +333,7 @@ class StdOutput(object):
         """
         sys.stdout = self.stdout
         sys.stderr = self.stderr
+        self.__configured = True
 
     def enable_paginator(self):
         """
@@ -315,6 +347,7 @@ class StdOutput(object):
                                                          "paginator: %s", details)
             return
         self.stdout = self.stderr = paginator
+        self.__configured = True
 
     def enable_stderr(self):
         """
@@ -322,6 +355,7 @@ class StdOutput(object):
         """
         sys.stdout = open(os.devnull, 'w')
         sys.stderr = self.stderr
+        self.__configured = True
 
     def close(self):
         """
@@ -356,23 +390,43 @@ def early_start():
     logging.root.level = logging.DEBUG
 
 
+CONFIG = []
+
+
+def del_last_configuration():
+    if len(CONFIG) == 1:
+        return
+    configuration = CONFIG.pop()
+    for logger_name in configuration:
+        disable_log_handler(logger_name)
+    configuration = CONFIG[-1]
+    for logger_name, handlers in configuration.items():
+        logger = logging.getLogger(logger_name)
+        for handler in handlers:
+            logger.addHandler(handler)
+
+
 def reconfigure(args):
     """
     Adjust logging handlers accordingly to app args and re-log messages.
     """
+    def save_handler(logger_name, handler, configuration):
+        if logger_name not in configuration:
+            configuration[logger_name] = []
+        configuration[logger_name].append(handler)
+
+    # Delete last configuration
+    if len(CONFIG) != 0:
+        last_configuration = CONFIG[-1]
+        for logger_name in last_configuration:
+            disable_log_handler(logger_name)
+
+    configuration = {}
     # Reconfigure stream loggers
-    enabled = getattr(args, "show", None)
+    enabled = args.get("core.show")
     if not isinstance(enabled, list):
         enabled = ["app"]
-        args.show = enabled
-    if getattr(args, "show_job_log", False):
-        del enabled[:]
-        enabled.append("test")
-    if getattr(args, "silent", False):
-        del enabled[:]
-    # "silent" is incompatible with "paginator"
-    elif getattr(args, "paginator", False) == "on" and TERM_SUPPORT.enabled:
-        STD_OUTPUT.enable_paginator()
+        args["core.show"] = enabled
     if "none" in enabled:
         del enabled[:]
     elif "all" in enabled:
@@ -384,6 +438,8 @@ def reconfigure(args):
     # TODO: Avocado relies on stdout/stderr on some places, re-log them here
     # for now. This should be removed once we replace them with logging.
     if enabled:
+        if args.get('core.paginator') == True and TERM_SUPPORT.enabled:
+            STD_OUTPUT.enable_paginator()
         STD_OUTPUT.enable_outputs()
     else:
         STD_OUTPUT.enable_stderr()
@@ -396,6 +452,7 @@ def reconfigure(args):
         LOG_UI.addHandler(app_handler)
         LOG_UI.propagate = False
         LOG_UI.level = logging.DEBUG
+        save_handler(LOG_UI.name, app_handler, configuration)
     else:
         disable_log_handler(LOG_UI)
     app_err_handler = ProgressStreamHandler()
@@ -404,29 +461,25 @@ def reconfigure(args):
     app_err_handler.stream = STD_OUTPUT.stderr
     LOG_UI.addHandler(app_err_handler)
     LOG_UI.propagate = False
+    save_handler(LOG_UI.name, app_err_handler, configuration)
     if not os.environ.get("AVOCADO_LOG_EARLY"):
         LOG_JOB.getChild("stdout").propagate = False
         LOG_JOB.getChild("stderr").propagate = False
         if "early" in enabled:
-            add_log_handler("", logging.StreamHandler, STD_OUTPUT.stdout,
-                            logging.DEBUG)
-            add_log_handler(LOG_JOB, logging.StreamHandler,
-                            STD_OUTPUT.stdout, logging.DEBUG)
+            handler = add_log_handler("", logging.StreamHandler,
+                                      STD_OUTPUT.stdout, logging.DEBUG)
+            save_handler("", handler, configuration)
+            handler = add_log_handler(LOG_JOB, logging.StreamHandler,
+                                      STD_OUTPUT.stdout, logging.DEBUG)
+            save_handler(LOG_JOB.name, handler, configuration)
         else:
             disable_log_handler("")
-            disable_log_handler(LOG_JOB)
-    if "remote" in enabled:
-        add_log_handler("avocado.fabric", stream=STD_OUTPUT.stdout,
-                        level=logging.DEBUG)
-        add_log_handler("paramiko", stream=STD_OUTPUT.stdout,
-                        level=logging.DEBUG)
-    else:
-        disable_log_handler("avocado.fabric")
-        disable_log_handler("paramiko")
     # Not enabled by env
     if not os.environ.get('AVOCADO_LOG_DEBUG'):
         if "debug" in enabled:
-            add_log_handler(LOG_UI.getChild("debug"), stream=STD_OUTPUT.stdout)
+            handler = add_log_handler(LOG_UI.getChild("debug"),
+                                      stream=STD_OUTPUT.stdout)
+            save_handler(LOG_UI.getChild("debug").name, handler, configuration)
         else:
             disable_log_handler(LOG_UI.getChild("debug"))
 
@@ -440,8 +493,9 @@ def reconfigure(args):
             level = (int(stream_level[1]) if stream_level[1].isdigit()
                      else logging.getLevelName(stream_level[1].upper()))
         try:
-            add_log_handler(name, logging.StreamHandler, STD_OUTPUT.stdout,
-                            level)
+            handler = add_log_handler(name, logging.StreamHandler,
+                                      STD_OUTPUT.stdout, level)
+            save_handler(name, handler, configuration)
         except ValueError as details:
             LOG_UI.error("Failed to set logger for --show %s:%s: %s.",
                          name, level, details)
@@ -454,6 +508,8 @@ def reconfigure(args):
     # Log early_messages
     for record in MemStreamHandler.log:
         logging.getLogger(record.name).handle(record)
+
+    CONFIG.append(configuration)
 
 
 class FilterWarnAndMore(logging.Filter):
@@ -493,9 +549,9 @@ class ProgressStreamHandler(logging.StreamHandler):
             if not skip_newline:
                 stream.write('\n')
             self.flush()
-        except (KeyboardInterrupt, SystemExit):
+        except (KeyboardInterrupt, SystemExit):  # pylint: disable=W0706
             raise
-        except Exception:
+        except Exception:  # pylint: disable=W0703
             self.handleError(record)
 
 
@@ -516,7 +572,7 @@ class MemStreamHandler(logging.StreamHandler):
         """
 
 
-class Paginator(object):
+class Paginator:
 
     """
     Paginator that uses less to display contents on the terminal.
@@ -525,6 +581,7 @@ class Paginator(object):
     """
 
     def __init__(self):
+        self.pipe = None
         paginator = os.environ.get('PAGER')
         if not paginator:
             try:
@@ -538,19 +595,21 @@ class Paginator(object):
         self.close()
 
     def close(self):
-        try:
-            self.pipe.close()
-        except Exception:
-            pass
+        if self.pipe:
+            try:
+                self.pipe.close()
+            except OSError:
+                pass
 
     def write(self, msg):
-        try:
-            self.pipe.write(msg)
-        except Exception:
-            pass
+        if self.pipe:
+            try:
+                self.pipe.write(msg)
+            except (OSError, ValueError):
+                pass
 
     def flush(self):
-        if not self.pipe.closed:
+        if self.pipe and not self.pipe.closed:
             self.pipe.flush()
 
 
@@ -589,7 +648,7 @@ def disable_log_handler(logger):
     logger.propagate = False
 
 
-class LoggingFile(object):
+class LoggingFile:
 
     """
     File-like object that will receive messages pass them to logging.
@@ -652,7 +711,7 @@ class LoggingFile(object):
         self._prefixes = self._prefixes[:idx] + self._prefixes[idx+1:]
 
 
-class Throbber(object):
+class Throbber:
 
     """
     Produces a spinner used to notify progress in the application UI.
@@ -691,9 +750,8 @@ def log_plugin_failures(failures):
                      attribute `load_failures`
     """
     msg_fmt = 'Failed to load plugin from module "%s": %s :\n%s'
-    silenced = settings.get_value('plugins',
-                                  'skip_broken_plugin_notification',
-                                  list, [])
+    config = settings.as_dict()
+    silenced = config.get('plugins.skip_broken_plugin_notification')
     for failure in failures:
         if failure[0].module_name in silenced:
             continue

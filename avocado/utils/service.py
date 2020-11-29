@@ -21,10 +21,10 @@
 # client/shared/service.py
 # Original author: Ross Brattain <ross.b.brattain@intel.com>
 
+import logging
 import os
 import re
-import logging
-from tempfile import mktemp
+from tempfile import mkstemp
 
 from . import process
 
@@ -109,18 +109,18 @@ def sys_v_init_result_parser(command):
     if command == "status":
         def method(cmd_result):
             """
-            Parse method for service XXX status.
+            Parse method for `service $name status`.
 
-            Returns True if XXX is running.
-            Returns False if XXX is stopped.
-            Returns None if XXX is unrecognized.
+            Returns True if running.
+            Returns False if stopped.
+            Returns None if unrecognized.
             """
             # If service is stopped, exit_status is also not zero.
             # So, we can't use exit_status to check result.
-            # Returns None if XXX is unrecognized.
+            # Returns None if unrecognized.
             if re.search(b"unrecognized", cmd_result.stderr.lower()):
                 return None
-            # Returns False if XXX is stopped.
+            # Returns False if stopped.
             output = cmd_result.stdout.lower()
             dead_flags = [b"stopped", b"not running", b"dead"]
             for flag in dead_flags:
@@ -132,7 +132,7 @@ def sys_v_init_result_parser(command):
     elif command == "list":
         def method(cmd_result):
             """
-            Parse method for service XXX list.
+            Parse method for `service $name list`.
 
             Return dict from service name to status.
 
@@ -198,16 +198,16 @@ def systemd_result_parser(command):
     if command == "status":
         def method(cmd_result):
             """
-            Parse method for systemctl status XXX.service.
+            Parse method for `systemctl status $name.service`.
 
-            Returns True if XXX.service is running.
-            Returns False if XXX.service is stopped.
-            Returns None if XXX.service is not loaded.
+            Returns True if running.
+            Returns False if stopped.
+            Returns None if not loaded.
             """
             # If service is stopped, exit_status is also not zero.
             # So, we can't use exit_status to check result.
             output = cmd_result.stdout
-            # Returns None if XXX is not loaded.
+            # Returns None if not loaded.
             if not re.search(b"Loaded: loaded", output):
                 return None
             # Check it with Active status.
@@ -216,7 +216,7 @@ def systemd_result_parser(command):
     elif command == "list":
         def method(cmd_result):
             """
-            Parse method for systemctl list XXX.service.
+            Parse method for `systemctl list $name.service`.
 
             Return a dict from service name to status.
 
@@ -346,7 +346,7 @@ COMMANDS = (
 )
 
 
-class _ServiceResultParser(object):  # pylint: disable=too-few-public-methods
+class _ServiceResultParser:  # pylint: disable=too-few-public-methods
 
     """
     A class that contains staticmethods to parse the result of service command.
@@ -380,7 +380,7 @@ class _ServiceResultParser(object):  # pylint: disable=too-few-public-methods
         return True
 
 
-class _ServiceCommandGenerator(object):  # pylint: disable=too-few-public-methods
+class _ServiceCommandGenerator:  # pylint: disable=too-few-public-methods
 
     """
     Generate command lists for starting/stopping services.
@@ -412,7 +412,7 @@ def get_name_of_init(run=process.run):
     :return: executable name for PID 1, aka init
     :rtype:  str
     """
-    if run == process.run:
+    if run is process.run:
         # On a local run, there are better ways to check
         # our PID 1 executable name.
         try:
@@ -430,7 +430,7 @@ def get_name_of_init(run=process.run):
         return os.path.basename(output)
 
 
-class _SpecificServiceManager(object):  # pylint: disable=too-few-public-methods
+class _SpecificServiceManager:  # pylint: disable=too-few-public-methods
 
     def __init__(self, service_name, service_command_generator,
                  service_result_parser, run=process.run):
@@ -507,7 +507,7 @@ class _SpecificServiceManager(object):  # pylint: disable=too-few-public-methods
         return run
 
 
-class _GenericServiceManager(object):  # pylint: disable=too-few-public-methods
+class _GenericServiceManager:  # pylint: disable=too-few-public-methods
 
     """
     Base class for SysVInitServiceManager and SystemdServiceManager.
@@ -655,7 +655,7 @@ class _SystemdServiceManager(_GenericServiceManager):
         :param runlevel: default systemd target
         :type runlevel: str
         """
-        tmp_symlink = mktemp(dir="/etc/systemd/system")
+        tmp_symlink = mkstemp(dir="/etc/systemd/system")
         os.symlink("/usr/lib/systemd/system/%s" % runlevel, tmp_symlink)
         os.rename(tmp_symlink, "/etc/systemd/system/default.target")
 
@@ -675,21 +675,25 @@ def service_manager(run=process.run):
     Detect which init program is being used, init or systemd and return a
     class has methods to start/stop services.
 
-    # Get the system service manager
-    >> service_manager = ServiceManager()
+    Example of use:
 
-    # Stating service/unit "sshd"
-    >> service_manager.start("sshd")
+    .. code-block:: python
 
-    # Getting a list of available units
-    >> units = service_manager.list()
+      # Get the system service manager
+      service_manager = ServiceManager()
 
-    # Disabling and stopping a list of services
-    >> services_to_disable = ['ntpd', 'httpd']
+      # Stating service/unit "sshd"
+      service_manager.start("sshd")
 
-    >> for s in services_to_disable:
-    >>    service_manager.disable(s)
-    >>    service_manager.stop(s)
+      # Getting a list of available units
+      units = service_manager.list()
+
+      # Disabling and stopping a list of services
+      services_to_disable = ['ntpd', 'httpd']
+
+      for s in services_to_disable:
+          service_manager.disable(s)
+          service_manager.stop(s)
 
     :return: SysVInitServiceManager or SystemdServiceManager
     :rtype: _GenericServiceManager
@@ -745,18 +749,23 @@ def _auto_create_specific_service_command_generator(run=process.run):
 
 
 def specific_service_manager(service_name, run=process.run):
-    """
-    # Get the specific service manager for sshd
-    >>> sshd = SpecificServiceManager("sshd")
-    >>> sshd.start()
-    >>> sshd.stop()
-    >>> sshd.reload()
-    >>> sshd.restart()
-    >>> sshd.condrestart()
-    >>> sshd.status()
-    >>> sshd.enable()
-    >>> sshd.disable()
-    >>> sshd.is_enabled()
+    """Get the service manager for a specific service.
+
+    Example of use:
+
+    .. code-block:: python
+
+      # Get the specific service manager for sshd
+      sshd = SpecificServiceManager("sshd")
+      sshd.start()
+      sshd.stop()
+      sshd.reload()
+      sshd.restart()
+      sshd.condrestart()
+      sshd.status()
+      sshd.enable()
+      sshd.disable()
+      sshd.is_enabled()
 
     :param service_name: systemd unit or init.d service to manager
     :type service_name: str

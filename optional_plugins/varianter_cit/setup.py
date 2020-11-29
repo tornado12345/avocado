@@ -14,8 +14,9 @@
 #          Cleber Rosa <crosa@redhat.com>
 
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
+VERSION = open("VERSION", "r").read().strip()
 
 setup(name='avocado-framework-plugin-varianter-cit',
       description='Varianter with combinatorial capabilities',
@@ -25,7 +26,7 @@ setup(name='avocado-framework-plugin-varianter-cit',
       url='http://avocado-framework.github.io/',
       packages=find_packages(),
       include_package_data=True,
-      install_requires=['avocado-framework', ],
+      install_requires=['avocado-framework==%s' % VERSION],
       test_suite='tests',
       entry_points={
           'avocado.plugins.cli': [

@@ -14,11 +14,12 @@
 
 """Journal Plugin"""
 
+import datetime
 import os
 import sqlite3
-import datetime
 
 from avocado.core.plugin_interfaces import CLI, ResultEvents
+from avocado.core.settings import settings
 
 JOURNAL_FILENAME = ".journal.sqlite"
 
@@ -44,13 +45,18 @@ class JournalResult(ResultEvents):
     name = 'journal'
     description = "Journal event based results implementation"
 
-    def __init__(self, args):  # pylint: disable=W0613
+    def __init__(self, config):  # pylint: disable=W0613
         """
         Creates an instance of ResultJournal.
 
         :param job: an instance of :class:`avocado.core.job.Job`.
         """
         self.journal_initialized = False
+        self.journal_path = ''
+        self.journal = None
+        self.journal_cursor = None
+        self.config = config
+        self.enabled = config.get('run.journal.enabled')
 
     def _init_journal(self, logdir):
         self.journal_path = os.path.join(logdir, JOURNAL_FILENAME)
@@ -100,6 +106,8 @@ class JournalResult(ResultEvents):
         pass
 
     def start_test(self, result, state):
+        if not self.enabled:
+            return
         self.lazy_init_journal(state)
         self._record_status(state, "STARTED")
 
@@ -107,10 +115,14 @@ class JournalResult(ResultEvents):
         pass
 
     def end_test(self, result, state):
+        if not self.enabled:
+            return
         self.lazy_init_journal(state)
         self._record_status(state, "ENDED")
 
     def post_tests(self, job):
+        if not self.enabled:
+            return
         self._shutdown_journal()
 
 
@@ -128,12 +140,15 @@ class Journal(CLI):
         if run_subcommand_parser is None:
             return
 
-        self.parser = parser
         help_msg = ('Records test status changes (for use with '
                     'avocado-journal-replay and avocado-server)')
-        run_subcommand_parser.output.add_argument('--journal',
-                                                  action='store_true',
-                                                  help=help_msg)
+        settings.register_option(section='run.journal',
+                                 key='enabled',
+                                 default=False,
+                                 key_type=bool,
+                                 help_msg=help_msg,
+                                 parser=run_subcommand_parser,
+                                 long_arg='--journal')
 
-    def run(self, args):
+    def run(self, config):
         pass

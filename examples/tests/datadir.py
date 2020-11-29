@@ -1,12 +1,8 @@
-#!/usr/bin/env python
-
 import os
 import shutil
 
 from avocado import Test
-from avocado import main
-from avocado.utils import build
-from avocado.utils import process
+from avocado.utils import build, process
 
 
 class DataDirTest(Test):
@@ -39,7 +35,3 @@ class DataDirTest(Test):
         cmd = os.path.join(self.workdir, 'datadir')
         cmd_result = process.run(cmd)
         self.log.info(cmd_result)
-
-
-if __name__ == "__main__":
-    main()

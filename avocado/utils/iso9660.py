@@ -34,8 +34,6 @@ import sys
 import tempfile
 
 from . import process
-from . import path as utils_path
-
 
 try:
     import pycdlib
@@ -121,7 +119,7 @@ def can_mount():
     return True
 
 
-class BaseIso9660(object):
+class BaseIso9660:
 
     """
     Represents a ISO9660 filesystem
@@ -130,7 +128,6 @@ class BaseIso9660(object):
     """
 
     def __init__(self, path):
-        utils_path.check_readable(path)
         self.path = path
 
     def read(self, path):
@@ -157,6 +154,7 @@ class BaseIso9660(object):
         with open(dst, 'w+b') as output:
             output.write(content)
 
+    @property
     def mnt_dir(self):
         """
         Returns a path to the browsable content of the iso
@@ -171,7 +169,7 @@ class BaseIso9660(object):
         """
 
 
-class MixInMntDirMount(object):
+class MixInMntDirMount:
     """
     Mix in class which defines `mnt_dir` property and instantiates the
     Iso9660Mount class to provide one. It requires `self.path` to store
@@ -262,7 +260,7 @@ class Iso9660IsoInfo(MixInMntDirMount, BaseIso9660):
         else:
             fname = self._get_filename_in_iso(path)
             if not fname:
-                logging.warn(
+                logging.warning(
                     "Could not find '%s' in iso '%s'", path, self.path)
                 return ""
 
@@ -382,7 +380,7 @@ class ISO9660PyCDLib(MixInMntDirMount, BaseIso9660):
     def __init__(self, path):
         if not has_pycdlib():
             raise RuntimeError('This class requires the pycdlib library')
-        self.path = path
+        super(ISO9660PyCDLib, self).__init__(path)
         self._iso = None
         self._iso_opened_for_create = False
 

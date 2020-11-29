@@ -1,11 +1,6 @@
-#!/usr/bin/env python
-
 import os
 import time
 
-from six.moves import xrange as range
-
-from avocado import main
 from avocado import Test
 
 
@@ -35,7 +30,3 @@ class SleepTenMin(Test):
                 time.sleep(length)
             elif method == 'shell':
                 os.system("sleep %s" % length)
-
-
-if __name__ == "__main__":
-    main()

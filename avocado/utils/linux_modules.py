@@ -21,15 +21,12 @@
 Linux kernel modules APIs
 """
 
-import re
 import logging
 import platform
-
+import re
 from enum import Enum
 
-from . import astring
-from . import process
-from . import data_structures
+from . import astring, data_structures, process
 
 LOG = logging.getLogger('avocado.test')
 
@@ -43,14 +40,6 @@ class ModuleConfig(Enum):
     BUILTIN = object()
 
 
-#: Compatibility alias (to be removed) to :attr:`ModuleConfig.NOT_SET`
-NOT_SET = ModuleConfig.NOT_SET
-#: Compatibility alias (to be removed) to :attr:`ModuleConfig.MODULE`
-MODULE = ModuleConfig.MODULE
-#: Compatibility alias (to be removed) to :attr:`ModuleConfig.BUILTIN`
-BUILTIN = ModuleConfig.BUILTIN
-
-
 def load_module(module_name):
     """
     Checks if a module has already been loaded.
@@ -59,20 +48,21 @@ def load_module(module_name):
     :rtype: Bool
     """
     if module_is_loaded(module_name):
-        return False
+        return True
 
-    process.system('/sbin/modprobe ' + module_name)
+    if process.system('/sbin/modprobe ' + module_name, ignore_status=True):
+        return False
     return True
 
 
 def parse_lsmod_for_module(l_raw, module_name, escape=True):
     """
-    Use a regexp to parse raw lsmod output and get module information
+    Use a regex to parse raw lsmod output and get module information
     :param l_raw: raw output of lsmod
     :type l_raw:  str
     :param module_name: Name of module to search for
     :type module_name: str
-    :param escape: Escape regexp tokens in module_name, default True
+    :param escape: Escape regex tokens in module_name, default True
     :type escape: bool
     :return: Dictionary of module info, name, size, submodules if present
     :rtype: dict

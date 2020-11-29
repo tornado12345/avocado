@@ -12,61 +12,88 @@
 # Copyright: Red Hat Inc. 2017
 # Author: Amador Pahim <apahim@redhat.com>
 
-from functools import wraps
 import types
+from functools import wraps
 
 from . import exceptions as core_exceptions
 
 
-def fail_on(exceptions=None):
+def deco_factory(behavior, signal):
     """
-    Fail the test when decorated function produces exception of the specified
-    type.
+    Decorator factory.
 
-    (For example, our method may raise IndexError on tested software failure.
-    We can either try/catch it or use this decorator instead)
-
-    :param exceptions: Tuple or single exception to be assumed as
-                       test fail [Exception]
-    :note: self.error and self.cancel behavior remains intact
-    :note: To allow simple usage param "exceptions" must not be callable
+    Returns a decorator used to signal the test when specified exception is
+    raised.
+    :param behavior: expected test result behavior.
+    :param signal: delegating exception.
     """
-    func = False
-    if exceptions is None:
-        exceptions = Exception
-    elif isinstance(exceptions, types.FunctionType):     # @fail_on without ()
-        func = exceptions
-        exceptions = Exception
+    def signal_on(exceptions=None):
+        """
+        {0} the test when decorated function produces exception of the
+        specified type.
 
-    def decorate(func):
-        """ Decorator """
-        @wraps(func)
-        def wrap(*args, **kwargs):
-            """ Function wrapper """
-            try:
-                return func(*args, **kwargs)
-            except core_exceptions.TestBaseException as exc:
-                raise exc
-            except exceptions as details:
-                raise core_exceptions.TestFail(str(details))
-        return wrap
-    if func:
-        return decorate(func)
-    return decorate
+        :param exceptions: Tuple or single exception to be assumed as
+                           test {1} [Exception].
+        :note: self.error, self.cancel and self.fail remain intact.
+        :note: to allow simple usage param 'exceptions' must not be callable.
+        """
+        func = False
+        if exceptions is None:
+            exceptions = Exception
+        elif isinstance(exceptions, types.FunctionType):
+            func = exceptions
+            exceptions = Exception
+
+        def decorate(func):
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+                except core_exceptions.TestBaseException as exc:
+                    raise exc
+                except exceptions as details:
+                    raise signal(repr(details)) from details
+            return wrapper
+        return decorate(func) if func else decorate
+
+    name = "{behavior}_on".format(behavior=behavior)
+    signal_on.__name__ = signal_on.__qualname__ = name
+    signal_on.__doc__ = signal_on.__doc__.format(behavior.capitalize(),
+                                                 behavior.upper())
+    return signal_on
+
+
+fail_on = deco_factory("fail", core_exceptions.TestFail)
+
+
+cancel_on = deco_factory("cancel", core_exceptions.TestCancel)
 
 
 def skip(message=None):
     """
     Decorator to skip a test.
     """
-    def decorator(function):
-        if not isinstance(function, type):
-            @wraps(function)
-            def wrapper(*args, **kwargs):  # pylint: disable=W0613
-                raise core_exceptions.TestSkipError(message)
-            function = wrapper
-        function.__skip_test_decorator__ = True
-        return function
+    def decorator(obj):
+        def method_decorator(function):
+            if not isinstance(function, type):
+                @wraps(function)
+                def wrapper(*args, **kwargs):  # pylint: disable=W0613
+                    raise core_exceptions.TestSkipError(message)
+                function = wrapper
+            function.__skip_test_decorator__ = True
+            return function
+
+        def class_decorator(cls):
+            for key in cls.__dict__:
+                if callable(getattr(cls, key)):
+                    wrapped = method_decorator(getattr(cls, key))
+                    setattr(cls, key, wrapped)
+            return cls
+
+        if isinstance(obj, type):
+            return class_decorator(obj)
+        else:
+            return method_decorator(obj)
     return decorator
 
 

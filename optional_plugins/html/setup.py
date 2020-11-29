@@ -13,21 +13,26 @@
 # Copyright: Red Hat Inc. 2016
 # Author: Cleber Rosa <crosa@redhat.com>
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
+VERSION = open("VERSION", "r").read().strip()
 
 setup(name='avocado-framework-plugin-result-html',
       description='Avocado HTML Report for Jobs',
-      version=open("VERSION", "r").read().strip(),
+      version=VERSION,
       author='Avocado Developers',
       author_email='avocado-devel@redhat.com',
       url='http://avocado-framework.github.io/',
       packages=find_packages(),
       include_package_data=True,
-      install_requires=['avocado-framework', 'jinja2'],
+      install_requires=['avocado-framework==%s' % VERSION,
+                        'markupsafe<2.0.0', 'jinja2<3.0.0'],
       entry_points={
           'avocado.plugins.cli': [
               'html = avocado_result_html:HTML',
+          ],
+          'avocado.plugins.init': [
+              'html = avocado_result_html:HTMLInit',
           ],
           'avocado.plugins.result': [
               'html = avocado_result_html:HTMLResult',

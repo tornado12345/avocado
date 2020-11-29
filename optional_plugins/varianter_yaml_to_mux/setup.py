@@ -13,20 +13,24 @@
 # Copyright: Red Hat Inc. 2017
 # Author: Cleber Rosa <crosa@redhat.com>
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
+VERSION = open("VERSION", "r").read().strip()
 
 setup(name='avocado-framework-plugin-varianter-yaml-to-mux',
       description='Avocado Varianter plugin to parse YAML file into variants',
-      version=open("VERSION", "r").read().strip(),
+      version=VERSION,
       author='Avocado Developers',
       author_email='avocado-devel@redhat.com',
       url='http://avocado-framework.github.io/',
       packages=find_packages(exclude=('tests*',)),
       include_package_data=True,
-      install_requires=('avocado-framework', 'PyYAML>=4.2b2'),
+      install_requires=['avocado-framework==%s' % VERSION, 'PyYAML>=4.2b2'],
       test_suite='tests',
       entry_points={
+          "avocado.plugins.init": [
+              "yaml_to_mux = avocado_varianter_yaml_to_mux:YamlToMuxInit",
+          ],
           "avocado.plugins.cli": [
               "yaml_to_mux = avocado_varianter_yaml_to_mux:YamlToMuxCLI",
           ],

@@ -5,14 +5,15 @@ avocado.utils.partition unittests
 """
 
 import os
-import shutil
 import sys
 import tempfile
 import unittest.mock
 
-from avocado.utils import partition, process
+from avocado.utils import partition
 from avocado.utils import path as utils_path
-from avocado.utils import wait
+from avocado.utils import process, wait
+
+from .. import temp_dir_prefix
 
 
 def missing_binary(binary):
@@ -36,16 +37,20 @@ class Base(unittest.TestCase):
     @unittest.skipIf(not process.can_sudo('mkfs.ext2 -V'),
                      'current user must be allowed to run "mkfs.ext2" under '
                      'sudo')
+    @unittest.skipIf(os.getenv('TRAVIS') and
+                     os.getenv('TRAVIS_CPU_ARCH') in ['arm64', 'ppc64le', 's390x'],
+                     'TRAVIS Environment is unsuitable for these tests')
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="avocado_" + __name__)
-        self.mountpoint = os.path.join(self.tmpdir, "disk")
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
+        self.mountpoint = os.path.join(self.tmpdir.name, "disk")
         os.mkdir(self.mountpoint)
-        self.disk = partition.Partition(os.path.join(self.tmpdir, "block"), 1,
+        self.disk = partition.Partition(os.path.join(self.tmpdir.name, "block"), 1,
                                         self.mountpoint)
 
     def tearDown(self):
         self.disk.unmount()
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
 
 class TestPartition(Base):

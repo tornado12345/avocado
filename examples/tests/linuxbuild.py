@@ -1,7 +1,4 @@
-#!/usr/bin/env python
-
 from avocado import Test
-from avocado import main
 from avocado.utils import kernel
 
 
@@ -17,8 +14,8 @@ class LinuxBuildTest(Test):
     """
 
     def setUp(self):
-        kernel_src_url = self.params.get('linux_src_url', default='https://www.kernel.org/pub/linux/kernel/v3.x')
-        kernel_version = self.params.get('linux_version', default='3.19.8')
+        kernel_src_url = self.params.get('linux_src_url', default='https://www.kernel.org/pub/linux/kernel/v5.x/')
+        kernel_version = self.params.get('linux_version', default='5.4.1')
         linux_config = self.params.get('linux_config', default=None)
         self.do_kernel_install = self.params.get('do_kernel_install', default=None)
         if linux_config is not None:
@@ -38,7 +35,3 @@ class LinuxBuildTest(Test):
         self.linux_build.build(True if self.do_kernel_install is not None else False)
         if self.do_kernel_install is not None:
             self.linux_build.install()
-
-
-if __name__ == "__main__":
-    main()

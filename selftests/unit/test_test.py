@@ -1,13 +1,12 @@
 import os
-import shutil
 import tempfile
 import unittest.mock
 
-from avocado.core import test, exceptions
-from avocado.utils import astring, script
+from avocado.core import exceptions, test
+from avocado.core.test_id import TestID
+from avocado.utils import script
 
-from .. import setup_avocado_loggers
-
+from .. import setup_avocado_loggers, temp_dir_prefix
 
 setup_avocado_loggers()
 
@@ -27,8 +26,12 @@ class TestClassTestUnit(unittest.TestCase):
         def test(self):
             pass
 
+        def skip(self):
+            self.skipTest('dummy skip test')
+
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="avocado_" + __name__)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
 
     def _get_fake_filename_test(self, name):
 
@@ -40,21 +43,21 @@ class TestClassTestUnit(unittest.TestCase):
             def test(self):
                 pass
 
-        tst_id = test.TestID("test", name=name)
-        return FakeFilename("test", tst_id, base_logdir=self.tmpdir)
+        tst_id = TestID("test", name=name)
+        return FakeFilename("test", tst_id, base_logdir=self.tmpdir.name)
 
     def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
     def test_ugly_name(self):
         def run(name, path_name):
             """ Initialize test and check the dirs were created """
-            tst = self.DummyTest("test", test.TestID(1, name),
-                                 base_logdir=self.tmpdir)
+            tst = self.DummyTest("test", TestID(1, name),
+                                 base_logdir=self.tmpdir.name)
             self.assertEqual(os.path.basename(tst.logdir), path_name)
             self.assertTrue(os.path.exists(tst.logdir))
             self.assertEqual(os.path.dirname(os.path.dirname(tst.logdir)),
-                             self.tmpdir)
+                             self.tmpdir.name)
 
         run("/absolute/path", "1-_absolute_path")
         run("./relative/path", "1-._relative_path")
@@ -74,8 +77,8 @@ class TestClassTestUnit(unittest.TestCase):
 
     def test_long_name(self):
         def check(uid, name, variant, exp_logdir):
-            tst = self.DummyTest("test", test.TestID(uid, name, variant),
-                                 base_logdir=self.tmpdir)
+            tst = self.DummyTest("test", TestID(uid, name, variant),
+                                 base_logdir=self.tmpdir.name)
             self.assertEqual(os.path.basename(tst.logdir), exp_logdir)
             return tst
 
@@ -102,16 +105,16 @@ class TestClassTestUnit(unittest.TestCase):
         """
         Checks `get_data()` won't report fs-unfriendly data dir name
         """
-        max_length_name = os.path.join(self.tmpdir, "a" * 250)
+        max_length_name = os.path.join(self.tmpdir.name, "a" * 250)
         tst = self._get_fake_filename_test(max_length_name)
-        self.assertEqual(os.path.join(self.tmpdir, max_length_name + ".data"),
+        self.assertEqual(os.path.join(self.tmpdir.name, max_length_name + ".data"),
                          tst.get_data('', 'file', False))
 
     def test_no_data_dir(self):
         """
         Tests that with a filename too long, no datadir is possible
         """
-        above_limit_name = os.path.join(self.tmpdir, "a" * 251)
+        above_limit_name = os.path.join(self.tmpdir.name, "a" * 251)
         tst = self._get_fake_filename_test(above_limit_name)
         self.assertFalse(tst.get_data('', 'file', False))
         tst._record_reference('stdout', 'stdout.expected')
@@ -121,10 +124,10 @@ class TestClassTestUnit(unittest.TestCase):
     def test_all_dirs_exists_no_hang(self):
         with unittest.mock.patch('os.path.exists', return_value=True):
             self.assertRaises(exceptions.TestSetupFail, self.DummyTest, "test",
-                              test.TestID(1, "name"), base_logdir=self.tmpdir)
+                              TestID(1, "name"), base_logdir=self.tmpdir.name)
 
     def test_try_override_test_variable(self):
-        dummy_test = self.DummyTest(base_logdir=self.tmpdir)
+        dummy_test = self.DummyTest(base_logdir=self.tmpdir.name)
         self.assertRaises(AttributeError, setattr, dummy_test, "name", "whatever")
         self.assertRaises(AttributeError, setattr, dummy_test, "status", "whatever")
 
@@ -140,8 +143,8 @@ class TestClassTestUnit(unittest.TestCase):
                 # return the filename (path, really) unchanged
                 return filename
 
-        tst = GetDataTest("test", test.TestID(1, "test"),
-                          base_logdir=self.tmpdir)
+        tst = GetDataTest("test", TestID(1, "test"),
+                          base_logdir=self.tmpdir.name)
         content = 'expected content\n'
         content_path = os.path.join(tst.logdir, 'content')
         with open(content_path, 'w') as produced:
@@ -156,8 +159,8 @@ class TestClassTestUnit(unittest.TestCase):
         '''
         Tests that a check is not made for a file that does not exist
         '''
-        tst = self.DummyTest("test", test.TestID(1, "test"),
-                             base_logdir=self.tmpdir)
+        tst = self.DummyTest("test", TestID(1, "test"),
+                             base_logdir=self.tmpdir.name)
         self.assertFalse(tst._check_reference('does_not_exist',
                                               'stdout.expected',
                                               'stdout.diff',
@@ -175,8 +178,9 @@ class TestClassTest(unittest.TestCase):
                 self.assertTrue(variable)
                 self.whiteboard = 'foo'
 
-        self.base_logdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.tst_instance_pass = AvocadoPass(base_logdir=self.base_logdir)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.base_logdir = tempfile.TemporaryDirectory(prefix=prefix)
+        self.tst_instance_pass = AvocadoPass(base_logdir=self.base_logdir.name)
         self.tst_instance_pass.run_avocado()
 
     def test_class_attributes_name(self):
@@ -203,16 +207,17 @@ class TestClassTest(unittest.TestCase):
                 pass
 
         self.assertRaises(exceptions.TestSetupFail, AvocadoPass,
-                          base_logdir=self.base_logdir)
+                          base_logdir=self.base_logdir.name)
 
     def tearDown(self):
-        shutil.rmtree(self.base_logdir)
+        self.base_logdir.cleanup()
 
 
 class SimpleTestClassTest(unittest.TestCase):
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
         self.script = None
 
     def test_simple_test_pass_status(self):
@@ -222,8 +227,8 @@ class SimpleTestClassTest(unittest.TestCase):
             'avocado_simpletest_unittest')
         self.script.save()
         tst_instance = test.SimpleTest(
-            name=test.TestID(1, self.script.path),
-            base_logdir=self.tmpdir)
+            name=TestID(1, self.script.path),
+            base_logdir=self.tmpdir.name)
         tst_instance.run_avocado()
         self.assertEqual(tst_instance.status, 'PASS')
 
@@ -234,151 +239,84 @@ class SimpleTestClassTest(unittest.TestCase):
             'avocado_simpletest_unittest')
         self.script.save()
         tst_instance = test.SimpleTest(
-            name=test.TestID(1, self.script.path),
-            base_logdir=self.tmpdir)
+            name=TestID(1, self.script.path),
+            base_logdir=self.tmpdir.name)
         tst_instance.run_avocado()
         self.assertEqual(tst_instance.status, 'FAIL')
 
     def tearDown(self):
         if self.script is not None:
             self.script.remove()
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
 
 class MockingTest(unittest.TestCase):
 
     def setUp(self):
-        self.tests = []
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
 
-    def test_init(self):
-        # No params
-        self.tests.append(test.MockingTest())
-        # Positional
-        self.tests.append(test.MockingTest("test", test.TestID(1, "my_name"),
-                                           {}, None, "1",
-                                           None, None, "extra_param1",
-                                           "extra_param2"))
-        self.assertEqual(self.tests[-1].name, "1-my_name")
-        # Kwargs
-        self.tests.append(test.MockingTest(methodName="test",
-                                           name=test.TestID(1, "my_name2"),
-                                           params={}, base_logdir=None,
-                                           tag="a", job=None, runner_queue=None,
-                                           extra1="extra_param1",
-                                           extra2="extra_param2"))
-        self.assertEqual(self.tests[-1].name, "1-my_name2")
-        # both (theoretically impossible in python, but valid for nasty tests)
-        # keyword args are used as they explicitly represent what they mean
-        self.tests.append(test.MockingTest("not used", "who cares", {}, None, "0",
-                                           None, None, "extra_param1",
-                                           "extra_param2",
-                                           methodName="test",
-                                           name=test.TestID(1, "my_name3"),
-                                           params={}, base_logdir=None,
-                                           tag="3", job=None, runner_queue=None,
-                                           extra1="extra_param3",
-                                           extra2="extra_param4"))
-        self.assertEqual(self.tests[-1].name, "1-my_name3")
-        # combination
-        self.tests.append(test.MockingTest("test", test.TestID(1, "my_name4"),
-                                           tag="321",
-                                           other_param="Whatever"))
-        self.assertEqual(self.tests[-1].name, "1-my_name4")
-        # ugly combination (positional argument overrides kwargs, this only
-        # happens when the substituted class reorders the positional arguments.
-        # We try to first match keyword args and then fall-back to positional
-        # ones.
+    def test_init_minimal_params(self):
+        test.MockingTest(base_logdir=self.tmpdir.name)
+
+    def test_init_positional(self):
+        tst = test.MockingTest("test", TestID(1, "my_name"),
+                               {}, None, "1",
+                               None, None, "extra_param1",
+                               "extra_param2", base_logdir=self.tmpdir.name)
+        self.assertEqual(tst.name, "1-my_name")
+
+    def test_init_kwargs(self):
+        tst = test.MockingTest(methodName="test",
+                               name=TestID(1, "my_name2"),
+                               params={}, base_logdir=self.tmpdir.name,
+                               tag="a", job=None, runner_queue=None,
+                               extra1="extra_param1",
+                               extra2="extra_param2")
+        self.assertEqual(tst.name, "1-my_name2")
+
+    def test_positional_kwargs(self):
+        """
+        Tests both positional and kwargs (theoretically impossible in
+        python, but valid for nasty tests)
+
+        keyword args are used as they explicitly represent what they mean
+        """
+        tst = test.MockingTest("not used", "who cares", {}, None, "0",
+                               None, None, "extra_param1",
+                               "extra_param2",
+                               methodName="test",
+                               name=TestID(1, "my_name3"),
+                               params={}, base_logdir=self.tmpdir.name,
+                               tag="3", job=None, runner_queue=None,
+                               extra1="extra_param3",
+                               extra2="extra_param4")
+        self.assertEqual(tst.name, "1-my_name3")
+
+    def test_combination(self):
+        tst = test.MockingTest("test", TestID(1, "my_name4"),
+                               tag="321",
+                               other_param="Whatever",
+                               base_logdir=self.tmpdir.name)
+        self.assertEqual(tst.name, "1-my_name4")
+
+    def test_combination_2(self):
+        """
+        Tests an ugly combination (positional argument overrides
+        kwargs, this only happens when the substituted class reorders
+        the positional arguments.  We try to first match keyword args
+        and then fall-back to positional ones.
+        """
         name = "positional_method_name_becomes_test_name"
         tag = "positional_base_logdir_becomes_tag"
-        self.tests.append(test.MockingTest(test.TestID(1, name), None, None, tag,
-                                           methodName="test",
-                                           other_param="Whatever"))
-        self.assertEqual(self.tests[-1].name, "1-" + name)
+        tst = test.MockingTest(TestID(1, name), None, None, tag,
+                               methodName="test",
+                               other_param="Whatever",
+                               base_logdir=self.tmpdir.name)
+        self.assertEqual(tst.name, "1-" + name)
 
     def tearDown(self):
-        for tst in self.tests:
-            try:
-                shutil.rmtree(os.path.dirname(os.path.dirname(tst.logdir)))
-            except Exception:
-                pass
-
-
-class TestID(unittest.TestCase):
-
-    def test_uid_name(self):
-        uid = 1
-        name = 'file.py:klass.test_method'
-        test_id = test.TestID(uid, name)
-        self.assertEqual(test_id.uid, 1)
-        self.assertEqual(test_id.str_uid, '1')
-        self.assertEqual(test_id.str_filesystem,
-                         astring.string_to_safe_path('%s-%s' % (uid, name)))
-        self.assertIs(test_id.variant, None)
-        self.assertIs(test_id.str_variant, '')
-
-    def test_uid_name_no_digits(self):
-        uid = 1
-        name = 'file.py:klass.test_method'
-        test_id = test.TestID(uid, name, no_digits=2)
-        self.assertEqual(test_id.uid, 1)
-        self.assertEqual(test_id.str_uid, '01')
-        self.assertEqual(test_id.str_filesystem,
-                         astring.string_to_safe_path('%s-%s' % ('01', name)))
-        self.assertIs(test_id.variant, None)
-        self.assertIs(test_id.str_variant, '')
-
-    def test_uid_name_large_digits(self):
-        """
-        Tests that when the filesystem can only cope with the size of
-        the Test ID, that's the only thing that will be kept.
-        """
-        uid = 1
-        name = 'test'
-        test_id = test.TestID(uid, name, no_digits=255)
-        self.assertEqual(test_id.uid, 1)
-        self.assertEqual(test_id.str_uid, '%0255i' % uid)
-        self.assertEqual(test_id.str_filesystem, '%0255i' % uid)
-        self.assertIs(test_id.variant, None)
-        self.assertIs(test_id.str_variant, '')
-
-    def test_uid_name_uid_too_large_digits(self):
-        """
-        Tests that when the filesystem can not cope with the size of
-        the Test ID, not even the test uid, an exception will be
-        raised.
-        """
-        test_id = test.TestID(1, 'test', no_digits=256)
-        self.assertRaises(RuntimeError, lambda: test_id.str_filesystem)
-
-    def test_uid_large_name(self):
-        """
-        Tests that when the filesystem can not cope with the size of
-        the Test ID, the name will be shortened.
-        """
-        uid = 1
-        name = 'test_' * 51     # 255 characters
-        test_id = test.TestID(uid, name)
-        self.assertEqual(test_id.uid, 1)
-        # only 253 can fit for the test name
-        self.assertEqual(test_id.str_filesystem, '%s-%s' % (uid, name[:253]))
-        self.assertIs(test_id.variant, None)
-        self.assertIs(test_id.str_variant, "")
-
-    def test_uid_name_large_variant(self):
-        """
-        Tests that when the filesystem can not cope with the size of
-        the Test ID, and a variant name is present, the name will be
-        removed.
-        """
-        uid = 1
-        name = 'test'
-        variant_id = 'fast_' * 51    # 255 characters
-        variant = {'variant_id': variant_id}
-        test_id = test.TestID(uid, name, variant=variant)
-        self.assertEqual(test_id.uid, 1)
-        self.assertEqual(test_id.str_filesystem, '%s_%s' % (uid, variant_id[:253]))
-        self.assertIs(test_id.variant, variant_id)
-        self.assertEqual(test_id.str_variant, ";%s" % variant_id)
+        self.tmpdir.cleanup()
 
 
 if __name__ == '__main__':

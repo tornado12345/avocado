@@ -15,22 +15,23 @@
 avocado.utils.stacktrace unittests
 """
 
+import pickle
 import re
 import unittest
 
 from avocado.utils import stacktrace
 
 
-class Unpickable(object):
+class Unpickable:
     """
     Dummy class which does not support pickling
     """
 
     def __getstate__(self):
-        raise NotImplementedError()
+        raise pickle.PickleError
 
 
-class InClassUnpickable(object):
+class InClassUnpickable:
     """
     Dummy class containing unpickable object inside itself
     """

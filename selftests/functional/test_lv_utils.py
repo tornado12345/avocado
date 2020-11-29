@@ -7,17 +7,15 @@ avocado.utils.lv_utils selftests
 import glob
 import os
 import sys
-import shutil
-import tempfile
 import time
 import unittest
 
-from avocado.utils import process
-from avocado.utils import lv_utils
-from avocado.utils import linux_modules
+from avocado.utils import linux_modules, lv_utils, process
+
+from .. import TestCaseTmpDir
 
 
-class LVUtilsTest(unittest.TestCase):
+class LVUtilsTest(TestCaseTmpDir):
 
     """
     Check the LVM related utilities
@@ -30,11 +28,11 @@ class LVUtilsTest(unittest.TestCase):
     @unittest.skipIf(not process.can_sudo(), "This test requires root or "
                      "passwordless sudo configured.")
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
+        super(LVUtilsTest, self).setUp()
         self.vgs = []
 
     def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
         for vg_name in self.vgs:
             lv_utils.vg_remove(vg_name)
 
@@ -51,8 +49,8 @@ class LVUtilsTest(unittest.TestCase):
         ramdisk_filename = vg_ramdisk_dir = loop_device = None
         vg_name = "avocado_testing_vg_e5kj3erv11a"
         lv_name = "avocado_testing_lv_lk0ff33al5h"
-        ramdisk_basedir = os.path.join(self.tmpdir, "foo", "bar")
-        mount_loc = os.path.join(self.tmpdir, "lv_mount_location")
+        ramdisk_basedir = os.path.join(self.tmpdir.name, "foo", "bar")
+        mount_loc = os.path.join(self.tmpdir.name, "lv_mount_location")
         os.mkdir(mount_loc)
         try:
             # Create ramdisk vg

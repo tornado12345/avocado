@@ -19,7 +19,8 @@ import os
 
 from avocado.core.output import LOG_UI
 from avocado.core.parser import FileOrStdoutAction
-from avocado.core.plugin_interfaces import CLI, ResultEvents
+from avocado.core.plugin_interfaces import CLI, Init, ResultEvents
+from avocado.core.settings import settings
 
 
 def file_log_factory(log_file):
@@ -52,10 +53,11 @@ class TAPResult(ResultEvents):
     name = 'tap'
     description = "TAP - Test Anything Protocol results"
 
-    def __init__(self, args):
+    def __init__(self, config):  # pylint: disable=W0613
         self.__logs = []
         self.__open_files = []
-        output = getattr(args, 'tap', None)
+        self.config = config
+        output = self.config.get('job.run.result.tap.output')
         if output == '-':
             log = LOG_UI.debug
             self.__logs.append(log)
@@ -63,7 +65,7 @@ class TAPResult(ResultEvents):
             log = open(output, "w", 1)
             self.__open_files.append(log)
             self.__logs.append(file_log_factory(log))
-        self.__include_logs = getattr(args, 'tap_include_logs', False)
+        self.__include_logs = self.config.get('job.run.result.tap.include_logs')
         self.is_header_printed = False
 
     def __write(self, msg, *writeargs):
@@ -86,7 +88,7 @@ class TAPResult(ResultEvents):
         Log the test plan
         """
         # Should we add default results.tap?
-        if getattr(job.args, 'tap_job_result', 'off') == 'on':
+        if self.config.get('job.run.result.tap.enabled'):
             log = open(os.path.join(job.logdir, 'results.tap'), "w", 1)
             self.__open_files.append(log)
             self.__logs.append(file_log_factory(log))
@@ -137,8 +139,46 @@ class TAPResult(ResultEvents):
         pass
 
     def post_tests(self, job):
+        if job.interrupted_reason is not None:
+            for pending_test in range(job.result.tests_run + 1, job.result.tests_total + 1):
+                self.__write("ok %s # SKIP %s", pending_test, job.interrupted_reason)
+            self.__flush()
+
         for open_file in self.__open_files:
             open_file.close()
+
+
+class TAPInit(Init):
+
+    name = 'TAP'
+    description = "TAP - Test Anything Protocol - result plugin initilization"
+
+    def initialize(self):
+        section = 'job.run.result.tap'
+        help_msg = ('Enable TAP result output and write it to FILE. Use '
+                    '"-" to redirect to standard output.')
+        settings.register_option(
+            section=section,
+            key='output',
+            help_msg=help_msg,
+            default=None)
+
+        help_msg = ('Enables default TAP result in the job results directory. '
+                    'File will be named "results.tap"')
+        settings.register_option(
+            section=section,
+            key='enabled',
+            key_type=bool,
+            default=True,
+            help_msg=help_msg)
+
+        help_msg = 'Include test logs as comments in TAP output.'
+        settings.register_option(
+            section=section,
+            key='include_logs',
+            default=False,
+            key_type=bool,
+            help_msg=help_msg)
 
 
 class TAP(CLI):
@@ -155,22 +195,22 @@ class TAP(CLI):
         if cmd_parser is None:
             return
 
-        cmd_parser.output.add_argument('--tap', type=str, metavar='FILE',
-                                       action=FileOrStdoutAction,
-                                       help="Enable TAP result output and "
-                                       "write it to FILE. Use '-' to redirect "
-                                       "to the standard output.")
+        settings.add_argparser_to_option(
+            namespace='job.run.result.tap.output',
+            metavar='FILE',
+            action=FileOrStdoutAction,
+            parser=cmd_parser,
+            long_arg='--tap')
 
-        cmd_parser.output.add_argument('--tap-job-result', default="on",
-                                       choices=("on", "off"), help="Enables "
-                                       "default TAP result in the job results"
-                                       " directory. File will be named "
-                                       "\"results.tap\".")
+        settings.add_argparser_to_option(
+            namespace='job.run.result.tap.enabled',
+            parser=cmd_parser,
+            long_arg='--disable-tap-job-result')
 
-        cmd_parser.output.add_argument('--tap-include-logs',
-                                       action='store_true', help='Include '
-                                       'test logs as comments in TAP output.'
-                                       ' Defaults to %(default)s')
+        settings.add_argparser_to_option(
+            namespace='job.run.result.tap.include_logs',
+            parser=cmd_parser,
+            long_arg='--tap-include-logs')
 
-    def run(self, args):
+    def run(self, config):
         pass

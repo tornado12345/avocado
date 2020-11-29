@@ -20,10 +20,12 @@ import os
 import string
 from xml.dom.minidom import Document
 
-from avocado.core.parser import FileOrStdoutAction
 from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import CLI, Result
-from avocado.utils import astring, data_structures
+from avocado.core.parser import FileOrStdoutAction
+from avocado.core.plugin_interfaces import CLI, Init, Result
+from avocado.core.settings import settings
+from avocado.utils import astring
+from avocado.utils.data_structures import DataSize
 
 
 class XUnitResult(Result):
@@ -132,28 +134,70 @@ class XUnitResult(Result):
         return document.toprettyxml(encoding='UTF-8')
 
     def render(self, result, job):
-        if not (hasattr(job.args, 'xunit_job_result') or
-                hasattr(job.args, 'xunit_output')):
+        xunit_enabled = job.config.get('job.run.result.xunit.enabled')
+        xunit_output = job.config.get('job.run.result.xunit.output')
+        if not (xunit_enabled or xunit_output):
             return
 
         if not result.tests_total:
             return
 
-        max_test_log_size = getattr(job.args, 'xunit_max_test_log_chars', None)
-        job_name = getattr(job.args, 'xunit_job_name', None)
+        max_test_log_size = job.config.get(
+            'job.run.result.xunit.max_test_log_chars')
+        job_name = job.config.get('job.run.result.xunit.job_name')
         content = self._render(result, max_test_log_size, job_name)
-        if getattr(job.args, 'xunit_job_result', 'off') == 'on':
+        if xunit_enabled:
             xunit_path = os.path.join(job.logdir, 'results.xml')
             with open(xunit_path, 'wb') as xunit_file:
                 xunit_file.write(content)
 
-        xunit_path = getattr(job.args, 'xunit_output', 'None')
+        xunit_path = xunit_output
         if xunit_path is not None:
             if xunit_path == '-':
                 LOG_UI.debug(content.decode('UTF-8'))
             else:
                 with open(xunit_path, 'wb') as xunit_file:
                     xunit_file.write(content)
+
+
+class XUnitInit(Init):
+
+    name = 'xunit'
+    description = 'xUnit job result initialization'
+
+    def initialize(self):
+        section = 'job.run.result.xunit'
+        help_msg = ('Enable xUnit result format and write it to FILE. '
+                    'Use "-" to redirect to the standard output.')
+        settings.register_option(section=section,
+                                 key='output',
+                                 help_msg=help_msg,
+                                 default=None)
+
+        help_msg = ('Enables default xUnit result in the job results '
+                    'directory. File will be named "results.xml".')
+        settings.register_option(section=section,
+                                 key='enabled',
+                                 key_type=bool,
+                                 default=True,
+                                 help_msg=help_msg)
+
+        help_msg = ('Override the reported job name. By default uses the '
+                    'Avocado job name which is always unique. This is useful '
+                    'for reporting in Jenkins as it only evaluates '
+                    'first-failure from jobs of the same name.')
+        settings.register_option(section=section,
+                                 key='job_name',
+                                 default=None,
+                                 help_msg=help_msg)
+
+        help_msg = ('Limit the attached job log to given number of characters '
+                    '(k/m/g suffix allowed)')
+        settings.register_option(section=section,
+                                 key='max_test_log_chars',
+                                 help_msg=help_msg,
+                                 key_type=lambda x: DataSize(x).b,
+                                 default=DataSize('100000').b)
 
 
 class XUnitCLI(CLI):
@@ -169,32 +213,28 @@ class XUnitCLI(CLI):
         run_subcommand_parser = parser.subcommands.choices.get('run', None)
         if run_subcommand_parser is None:
             return
+        settings.add_argparser_to_option(
+            namespace='job.run.result.xunit.output',
+            metavar='FILE',
+            action=FileOrStdoutAction,
+            parser=run_subcommand_parser.output,
+            long_arg='--xunit')
 
-        self.parser = parser
-        run_subcommand_parser.output.add_argument(
-            '--xunit', type=str, action=FileOrStdoutAction,
-            dest='xunit_output', metavar='FILE',
-            help=('Enable xUnit result format and write it to FILE. '
-                  "Use '-' to redirect to the standard output."))
+        settings.add_argparser_to_option(
+            namespace='job.run.result.xunit.enabled',
+            parser=run_subcommand_parser.output,
+            long_arg='--disable-xunit-job-result')
 
-        run_subcommand_parser.output.add_argument(
-            '--xunit-job-result', dest='xunit_job_result',
-            choices=('on', 'off'), default='on',
-            help=('Enables default xUnit result in the job results directory. '
-                  'File will be named "results.xml". '
-                  'Defaults to on.'))
+        settings.add_argparser_to_option(
+            namespace='job.run.result.xunit.job_name',
+            parser=run_subcommand_parser.output,
+            long_arg='--xunit-job-name')
 
-        run_subcommand_parser.output.add_argument(
-            '--xunit-job-name', default=None, help="Override the reported "
-            "job name. By default uses the Avocado job name which is always "
-            "unique. This is useful for reporting in Jenkins as it only "
-            "evaluates first-failure from jobs of the same name.")
+        settings.add_argparser_to_option(
+            namespace='job.run.result.xunit.max_test_log_chars',
+            metavar='SIZE',
+            parser=run_subcommand_parser.output,
+            long_arg='--xunit-max-test-log-chars')
 
-        run_subcommand_parser.output.add_argument(
-            '--xunit-max-test-log-chars', metavar='SIZE',
-            type=lambda x: data_structures.DataSize(x).b, help="Limit the "
-            "attached job log to given number of characters (k/m/g suffix "
-            "allowed)")
-
-    def run(self, args):
+    def run(self, config):
         pass

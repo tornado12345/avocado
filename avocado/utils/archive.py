@@ -17,27 +17,14 @@ Module to help extract and create compressed archives.
 
 import gzip
 import logging
+import lzma
 import os
 import platform
 import stat
 import tarfile
 import zipfile
 
-from six import iteritems
-
-
 LOG = logging.getLogger(__name__)
-
-
-try:
-    import lzma
-    LZMA_CAPABLE = True
-except ImportError:
-    try:
-        from backports import lzma
-        LZMA_CAPABLE = True
-    except ImportError:
-        LZMA_CAPABLE = False
 
 
 #: The first two bytes that all gzip files start with
@@ -71,60 +58,46 @@ def gzip_uncompress(path, output_path):
         return output_path
 
 
+def is_lzma_file(path):
+    """
+    Checks if file given by path has contents that suggests lzma file
+    """
+    with lzma.LZMAFile(path, 'rb') as lzma_file:
+        try:
+            _ = lzma_file.read(1)
+        except lzma.LZMAError:
+            return False
+        except EOFError:
+            return False
+    return True
+
+
+def lzma_uncompress(path, output_path=None, force=False):
+    """
+    Extracts a XZ compressed file to the same directory.
+    """
+    if output_path is None:
+        output_path = os.path.splitext(path)[0]
+    elif os.path.isdir(output_path):
+        basename = os.path.basename(path)
+        if basename.endswith('.xz'):
+            basename = os.path.splitext(basename)[0]
+        output_path = os.path.join(output_path, basename)
+    if not force and os.path.exists(output_path):
+        return output_path
+    with lzma.open(path, 'rb') as file_obj:
+        with open(output_path, 'wb') as newfile_obj:
+            newfile_obj.write(file_obj.read())
+    return output_path
+
+
 class ArchiveException(Exception):
     """
     Base exception for all archive errors.
     """
 
 
-class _WrapLZMA(object):
-
-    """ wraps tar.xz for python 2.7's tarfile """
-
-    def __init__(self, filename, mode):
-        """
-        Creates an instance of :class:`ArchiveFile`.
-
-        :param filename: the archive file name.
-        :param mode: file mode, `r` read, `w` write.
-        """
-        self._engine = tarfile.open(fileobj=lzma.LZMAFile(filename, mode),
-                                    mode=mode)
-        methods = dir(self._engine)
-        for meth in dir(self):
-            try:
-                methods.remove(meth)
-            except ValueError:
-                pass
-        for method in methods:
-            setattr(self, method, getattr(self._engine, method))
-
-    @classmethod
-    def open(cls, filename, mode='r'):
-        """
-        Creates an instance of :class:`_WrapLZMA`.
-
-        :param filename: the archive file name.
-        :param mode: file mode, `r` read, `w` write.
-        """
-        return cls(filename, mode)
-
-
-if LZMA_CAPABLE:
-    def extract_lzma(path, force=False):
-        """
-        Extracts a XZ compressed file to the same directory.
-        """
-        extracted_file = os.path.splitext(path)[0]
-        if not force and os.path.exists(extracted_file):
-            return extracted_file
-        with open(path, 'rb') as file_obj:
-            with open(extracted_file, 'wb') as newfile_obj:
-                newfile_obj.write(lzma.decompress(file_obj.read()))
-        return extracted_file
-
-
-class ArchiveFile(object):
+class ArchiveFile:
 
     """
     Class that represents an Archive file.
@@ -139,10 +112,8 @@ class ArchiveFile(object):
         '.tar.gz': (False, True, tarfile.open, ':gz'),
         '.tgz': (False, True, tarfile.open, ':gz'),
         '.tar.bz2': (False, True, tarfile.open, ':bz2'),
-        '.tbz2': (False, True, tarfile.open, ':bz2')}
-
-    if LZMA_CAPABLE:
-        _extension_table['.xz'] = (False, True, _WrapLZMA.open, '')
+        '.tbz2': (False, True, tarfile.open, ':bz2'),
+        '.xz': (False, True, tarfile.open, ':xz')}
 
     def __init__(self, filename, mode='r'):
         """
@@ -231,17 +202,17 @@ class ArchiveFile(object):
 
     def _update_zip_extra_attrs(self, dst_dir):
         if platform.system() != "Linux":
-            LOG.warn("Attr handling in zip files only supported on Linux.")
+            LOG.warning("Attr handling in zip files only supported on Linux.")
             return
         # Walk all files and re-create files as symlinks
-        for path, info in iteritems(self._engine.NameToInfo):
+        for path, info in self._engine.NameToInfo.items():
             dst = os.path.join(dst_dir, path)
             if not os.path.exists(dst):
-                LOG.warn("One or more files in the ZIP archive '%s' could "
-                         "not be found after extraction. Their paths are "
-                         "probably stored in unsupported format and their "
-                         "attributes are not going to be updated",
-                         self.filename)
+                LOG.warning("One or more files in the ZIP archive '%s' could "
+                            "not be found after extraction. Their paths are "
+                            "probably stored in unsupported format and their "
+                            "attributes are not going to be updated",
+                            self.filename)
                 return
             attr = info.external_attr >> 16
             if attr & stat.S_IFLNK == stat.S_IFLNK:
@@ -276,7 +247,7 @@ def is_archive(filename):
     :return: `True` if it is an archive.
     """
     return (zipfile.is_zipfile(filename) or tarfile.is_tarfile(filename) or
-            is_gzip_file(filename))
+            is_gzip_file(filename) or is_lzma_file(filename))
 
 
 def compress(filename, path):
@@ -305,8 +276,11 @@ def uncompress(filename, path):
     :param filename: archive file name.
     :param path: destination path to extract to.
     """
-    if is_gzip_file(filename) and not tarfile.is_tarfile(filename):
+    is_tar = tarfile.is_tarfile(filename)
+    if is_gzip_file(filename) and not is_tar:
         return gzip_uncompress(filename, path)
+    elif is_lzma_file(filename) and not is_tar:
+        return lzma_uncompress(filename, path)
     else:
         with ArchiveFile.open(filename) as x:
             return x.extract(path)

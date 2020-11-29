@@ -13,16 +13,13 @@
 # Authors: Cleber Rosa <crosa@redhat.com>
 
 import hashlib
-import itertools
 import os
 import sys
 
-from six import iteritems
-
 from avocado.core import exit_codes
 from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import CLI
-from avocado.core.plugin_interfaces import Varianter
+from avocado.core.plugin_interfaces import CLI, Varianter
+from avocado.core.settings import settings
 from avocado.core.tree import TreeNode
 from avocado.utils import path as utils_path
 from avocado.utils import process
@@ -48,31 +45,56 @@ class VarianterPictCLI(CLI):
             if subparser is None:
                 continue
             pict = subparser.add_argument_group('pict based varianter options')
-            pict.add_argument('--pict-binary', metavar='PATH',
-                              default=pict_binary,
-                              help=('Where to find the binary version of the '
-                                    'pict tool. Tip: download it from '
-                                    'https://github.com/Microsoft/pict and '
-                                    'run `make` to build it'))
-            pict.add_argument('--pict-parameter-file', metavar='PATH',
-                              help=("Paths to a pict parameter file"))
-            pict.add_argument('--pict-parameter-path', metavar='PATH',
-                              default='/run',
-                              help=('Default path for parameters generated '
-                                    'on the Pict based variants'))
-            pict.add_argument('--pict-order-of-combinations',
-                              metavar='ORDER', type=int, default=2,
-                              help=("Order of combinations. Defaults to "
-                                    "%(default)s, maximum number is specific "
-                                    "to parameter file content"))
 
-    def run(self, args):
+            help_msg = ('Where to find the binary version of the pict tool. '
+                        'Tip: download it from '
+                        '"https://github.com/Microsoft/pict" and run `make` '
+                        'to build it')
+            settings.register_option(section=name,
+                                     key='pict_binary',
+                                     help_msg=help_msg,
+                                     default=pict_binary,
+                                     metavar='PATH',
+                                     parser=pict,
+                                     long_arg='--pict-binary')
+
+            help_msg = "Paths to a pict parameter file"
+            settings.register_option(section=name,
+                                     key='pict_parameter_file',
+                                     metavar='PATH',
+                                     help_msg=help_msg,
+                                     default=None,
+                                     parser=pict,
+                                     long_arg='--pict-parameter-file')
+
+            help_msg = ('Default path for parameters generated on the '
+                        'Pict based variants')
+            settings.register_option(section=name,
+                                     key='pict_parameter_path',
+                                     metavar='PATH',
+                                     help_msg=help_msg,
+                                     default='/run',
+                                     parser=pict,
+                                     long_arg='--pict-parameter-path')
+
+            help_msg = ("Order of combinations. Maximum number is specific to "
+                        "parameter file content")
+            settings.register_option(section=name,
+                                     key='pict_combinations_order',
+                                     metavar='ORDER',
+                                     key_type=int,
+                                     help_msg=help_msg,
+                                     default=2,
+                                     parser=pict,
+                                     long_arg='--pict-order-of-combinations')
+
+    def run(self, config):
         pass
 
 
 def run_pict(binary, parameter_file, order):
     cmd = "%s %s /o:%s" % (binary, parameter_file, order)
-    return process.system_output(cmd, shell=True)
+    return process.run(cmd, shell=True).stdout_text
 
 
 def parse_pict_output(output):
@@ -94,11 +116,14 @@ class VarianterPict(Varianter):
     name = 'pict'
     description = "PICT based Varianter"
 
-    def initialize(self, args):
-        self.variants = None
+    def initialize(self, config):
+        self.variants = None  # pylint: disable=W0201
         error = False
 
-        pict_parameter_file = getattr(args, "pict_parameter_file", None)
+        subcommand = config.get('subcommand', 'run')
+
+        namespace = "{}.pict_parameter_file".format(subcommand)
+        pict_parameter_file = config.get(namespace)
         if pict_parameter_file is None:
             return
         else:
@@ -107,8 +132,7 @@ class VarianterPict(Varianter):
                 LOG_UI.error("pict parameter file '%s' could not be found or "
                              "is not readable", pict_parameter_file)
                 error = True
-
-        pict_binary = getattr(args, "pict_binary", None)
+        pict_binary = config.get("{}.pict_binary".format(subcommand))
         if pict_binary is None:
             LOG_UI.error("pict binary could not be found in $PATH. Please set "
                          "its location with --pict-binary or put it in your "
@@ -123,17 +147,19 @@ class VarianterPict(Varianter):
                 error = True
 
         if error:
-            if args.subcommand == 'run':
+            if subcommand == 'run':
                 sys.exit(exit_codes.AVOCADO_JOB_FAIL)
             else:
                 sys.exit(exit_codes.AVOCADO_FAIL)
 
-        self.parameter_path = getattr(args, "pict_parameter_path")
+        path_namespace = "{}.pict_parameter_path".format(subcommand)
+        self.parameter_path = config.get(path_namespace)  # pylint: disable=W0201
 
+        order_namespace = "{}.pict_combinations_order".format(subcommand)
         output = run_pict(pict_binary,
                           pict_parameter_file,
-                          getattr(args, "pict_order_of_combinations"))
-        self.headers, self.variants = parse_pict_output(output)
+                          config.get(order_namespace))
+        self.headers, self.variants = parse_pict_output(output)  # pylint: disable=W0201
 
     def __iter__(self):
         if self.variants is None:
@@ -143,22 +169,19 @@ class VarianterPict(Varianter):
         for variant in self.variants:
             base_id = "-".join([variant.get(key) for key in self.headers])
             variant_ids.append(base_id + '-' +
-                               hashlib.sha1(base_id).hexdigest()[:4])
+                               hashlib.sha1(base_id.encode()).hexdigest()[:4])
 
-        for vid, variant in itertools.izip(variant_ids, self.variants):
+        for vid, variant in zip(variant_ids, self.variants):
             variant_tree_nodes = []
             for key, val in variant.items():
                 variant_tree_nodes.append(TreeNode(key, {key: val}))
 
             yield {"variant_id": vid,
                    "variant": variant_tree_nodes,
-                   "paths": self.parameter_path}
+                   "paths": [self.parameter_path]}
 
     def __len__(self):
         return sum(1 for _ in self)
-
-    def update_defaults(self, defaults):
-        pass
 
     def to_str(self, summary, variants, **kwargs):
         """
@@ -186,7 +209,7 @@ class VarianterPict(Varianter):
                 continue
             env = set()
             for node in variant["variant"]:
-                for key, value in iteritems(node.environment):
+                for key, value in node.environment.items():
                     origin = node.environment.origin[key].path
                     env.add(("%s:%s" % (origin, key), str(value)))
             if not env:

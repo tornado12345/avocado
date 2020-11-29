@@ -21,18 +21,16 @@ import shutil
 import subprocess
 import time
 
+from ..utils import astring, genio
+from ..utils import path as utils_path
+from ..utils import process, software_manager
 from . import output
 from .settings import settings
-from ..utils import astring
-from ..utils import genio
-from ..utils import process
-from ..utils import software_manager
-from ..utils import path as utils_path
 
 log = logging.getLogger("avocado.sysinfo")
 
 
-class Collectible(object):
+class Collectible:
 
     """
     Abstract class for representing collectibles by sysinfo.
@@ -97,6 +95,16 @@ class Logfile(Collectible):
         :param logdir: Log directory which the file is going to be copied to.
         """
         if os.path.exists(self.path):
+            config = settings.as_dict()
+            if config.get('sysinfo.collect.optimize') and logdir.endswith('post'):
+                pre_file = os.path.join(os.path.dirname(logdir), 'pre',
+                                        self.logf)
+                if os.path.isfile(pre_file):
+                    with open(self.path) as f1, open(pre_file) as f2:
+                        if f1.read() == f2.read():
+                            log.debug("Not logging %s (no change detected)",
+                                      self.path)
+                            return
             try:
                 shutil.copyfile(self.path, os.path.join(logdir, self.logf))
             except IOError:
@@ -150,25 +158,41 @@ class Command(Collectible):
         :param logdir: Path to a log directory.
         """
         env = os.environ.copy()
+        config = settings.as_dict()
         if "PATH" not in env:
             env["PATH"] = "/usr/bin:/bin"
-        locale = settings.get_value("sysinfo.collect", "locale", str, None)
+        locale = config.get("sysinfo.collect.locale")
         if locale:
             env["LC_ALL"] = locale
-        timeout = settings.get_value("sysinfo.collect", "commands_timeout",
-                                     int, -1)
+        timeout = config.get('sysinfo.collect.commands_timeout')
         # the sysinfo configuration supports negative or zero integer values
         # but the avocado.utils.process APIs define no timeouts as "None"
         if int(timeout) <= 0:
             timeout = None
-        result = process.run(self.cmd,
-                             timeout=timeout,
-                             verbose=False,
-                             ignore_status=True,
-                             allow_output_check='combined',
-                             shell=True,
-                             env=env)
+        try:
+            result = process.run(self.cmd,
+                                 timeout=timeout,
+                                 verbose=False,
+                                 ignore_status=True,
+                                 allow_output_check='combined',
+                                 shell=True,
+                                 env=env)
+        except FileNotFoundError as exc_fnf:
+            log.debug("Not logging '%s' (command '%s' was not found)", self.cmd,
+                      exc_fnf.filename)
+            return
+        except Exception as exc:  # pylint: disable=W0703
+            log.warning('Could not execute "%s": %s', self.cmd, exc)
+            return
         logf_path = os.path.join(logdir, self.logf)
+        if config.get('sysinfo.collect.optimize') and logdir.endswith('post'):
+            pre_file = os.path.join(os.path.dirname(logdir), 'pre', self.logf)
+            if os.path.isfile(pre_file):
+                with open(pre_file, 'rb') as f1:
+                    if f1.read() == result.stdout:
+                        log.debug("Not logging %s (no change detected)",
+                                  self.cmd)
+                        return
         if self._compress_log:
             with gzip.GzipFile(logf_path, 'wb') as logf:
                 logf.write(result.stdout)
@@ -198,9 +222,10 @@ class Daemon(Command):
         :param logdir: Path to a log directory.
         """
         env = os.environ.copy()
+        config = settings.as_dict()
         if "PATH" not in env:
             env["PATH"] = "/usr/bin:/bin"
-        locale = settings.get_value("sysinfo.collect", "locale", str, None)
+        locale = config.get("sysinfo.collect.locale")
         if locale:
             env["LC_ALL"] = locale
         logf_path = os.path.join(logdir, self.logf)
@@ -252,7 +277,7 @@ class JournalctlWatcher(Collectible):
             result = process.system_output(cmd, verbose=False)
             last_record = json.loads(astring.to_text(result, "utf-8"))
             return last_record['__CURSOR']
-        except Exception as detail:
+        except Exception as detail:  # pylint: disable=W0703
             log.debug("Journalctl collection failed: %s", detail)
 
     def run(self, logdir):
@@ -266,7 +291,7 @@ class JournalctlWatcher(Collectible):
             except IOError:
                 log.debug("Not logging journalctl (lack of permissions): %s",
                           dstpath)
-            except Exception as detail:
+            except Exception as detail:  # pylint: disable=W0703
                 log.debug("Journalctl collection failed: %s", detail)
 
 
@@ -353,19 +378,18 @@ class LogWatcher(Collectible):
             log.info(detail)
         except (IOError, OSError):
             log.debug("Not logging %s (lack of permissions)", self.path)
-        except Exception as detail:
+        except Exception as detail:  # pylint: disable=W0703
             log.error("Log file %s collection failed: %s", self.path, detail)
 
 
-class SysInfo(object):
+class SysInfo:
 
     """
-    Log different system properties at some key control points:
+    Log different system properties at some key control points.
 
-    * start_job
-    * start_test
-    * end_test
-    * end_job
+    Includes support for a start and stop event, with daemons running in
+    between.  An event may be a job, a test, or any other event with a
+    beginning and end.
     """
 
     def __init__(self, basedir=None, log_packages=None, profiler=None):
@@ -380,86 +404,75 @@ class SysInfo(object):
         :param profiler: Whether to use the profiler. If not given explicitly,
                          tries to look in the config files.
         """
+        self.config = settings.as_dict()
+
         if basedir is None:
             basedir = utils_path.init_dir('sysinfo')
         self.basedir = basedir
 
         self._installed_pkgs = None
         if log_packages is None:
-            self.log_packages = settings.get_value('sysinfo.collect',
-                                                   'installed_packages',
-                                                   key_type='bool',
-                                                   default=False)
+            packages_namespace = 'sysinfo.collect.installed_packages'
+            self.log_packages = self.config.get(packages_namespace)
         else:
             self.log_packages = log_packages
 
-        commands_file = settings.get_value('sysinfo.collectibles',
-                                           'commands',
-                                           key_type='path',
-                                           default='')
+        self._get_collectibles(profiler)
 
-        if os.path.isfile(commands_file):
-            log.info('Commands configured by file: %s', commands_file)
-            self.commands = genio.read_all_lines(commands_file)
-        else:
-            log.debug('File %s does not exist.', commands_file)
-            self.commands = []
-
-        files_file = settings.get_value('sysinfo.collectibles',
-                                        'files',
-                                        key_type='path',
-                                        default='')
-        if os.path.isfile(files_file):
-            log.info('Files configured by file: %s', files_file)
-            self.files = genio.read_all_lines(files_file)
-        else:
-            log.debug('File %s does not exist.', files_file)
-            self.files = []
-
-        if profiler is None:
-            self.profiler = settings.get_value('sysinfo.collect',
-                                               'profiler',
-                                               key_type='bool',
-                                               default=False)
-        else:
-            self.profiler = profiler
-
-        profiler_file = settings.get_value('sysinfo.collectibles',
-                                           'profilers',
-                                           key_type='path',
-                                           default='')
-        if os.path.isfile(profiler_file):
-            self.profilers = genio.read_all_lines(profiler_file)
-            log.info('Profilers configured by file: %s', profiler_file)
-            if not self.profilers:
-                self.profiler = False
-
-            if self.profiler is False:
-                if not self.profilers:
-                    log.info('Profiler disabled: no profiler'
-                             ' commands configured')
-                else:
-                    log.info('Profiler disabled')
-        else:
-            log.debug('File %s does not exist.', profiler_file)
-            self.profilers = []
-
-        self.start_job_collectibles = set()
-        self.end_job_collectibles = set()
-
-        self.start_test_collectibles = set()
-        self.end_test_collectibles = set()
-
-        self.hook_mapping = {'start_job': self.start_job_collectibles,
-                             'end_job': self.end_job_collectibles,
-                             'start_test': self.start_test_collectibles,
-                             'end_test': self.end_test_collectibles}
+        self.start_collectibles = set()
+        self.end_collectibles = set()
+        self.end_fail_collectibles = set()
 
         self.pre_dir = utils_path.init_dir(self.basedir, 'pre')
         self.post_dir = utils_path.init_dir(self.basedir, 'post')
         self.profile_dir = utils_path.init_dir(self.basedir, 'profile')
 
         self._set_collectibles()
+
+    def _get_collectibles(self, c_profiler):
+        self.sysinfo_files = {}
+
+        for collectible in ['commands', 'files', 'fail_commands', 'fail_files']:
+            tmp_file = self.config.get(
+                'sysinfo.collectibles.%s' % collectible)
+            if os.path.isfile(tmp_file):
+                log.info('%s configured by file: %s', collectible.title(),
+                         tmp_file)
+                self.sysinfo_files[collectible] = genio.read_all_lines(
+                    tmp_file)
+            else:
+                log.debug('File %s does not exist.', tmp_file)
+                self.sysinfo_files[collectible] = []
+
+            if 'fail_' in collectible:
+                list1 = self.sysinfo_files[collectible]
+                list2 = self.sysinfo_files[collectible.split('_')[1]]
+                self.sysinfo_files[collectible] = [
+                    tmp for tmp in list1 if tmp not in list2]
+
+        profiler = c_profiler
+        if profiler is None:
+            self.profiler = self.config.get('sysinfo.collect.profiler')
+        else:
+            self.profiler = profiler
+
+        profiler_file = self.config.get('sysinfo.collectibles.profilers')
+        if os.path.isfile(profiler_file):
+            self.sysinfo_files["profilers"] = genio.read_all_lines(
+                profiler_file)
+            log.info('Profilers configured by file: %s', profiler_file)
+            if not self.sysinfo_files["profilers"]:
+                self.profiler = False
+
+            if self.profiler is False:
+                if not self.sysinfo_files["profilers"]:
+                    log.info('Profiler disabled: no profiler'
+                             ' commands configured')
+                else:
+                    log.info('Profiler disabled')
+        else:
+            log.debug('File %s does not exist.', profiler_file)
+            self.sysinfo_files["profilers"] = []
 
     def _get_syslog_watcher(self):
         logpaths = ["/var/log/messages",
@@ -472,76 +485,25 @@ class SysInfo(object):
                          logpaths)
 
     def _set_collectibles(self):
-        add_per_test = settings.get_value("sysinfo.collect", "per_test",
-                                          bool, None)
         if self.profiler:
-            for cmd in self.profilers:
-                self.start_job_collectibles.add(Daemon(cmd))
-                if add_per_test:
-                    self.start_test_collectibles.add(Daemon(cmd))
+            for cmd in self.sysinfo_files["profilers"]:
+                self.start_collectibles.add(Daemon(cmd))
 
-        for cmd in self.commands:
-            self.start_job_collectibles.add(Command(cmd))
-            self.end_job_collectibles.add(Command(cmd))
-            if add_per_test:
-                self.start_test_collectibles.add(Command(cmd))
-                self.end_test_collectibles.add(Command(cmd))
+        for cmd in self.sysinfo_files["commands"]:
+            self.start_collectibles.add(Command(cmd))
+            self.end_collectibles.add(Command(cmd))
 
-        for filename in self.files:
-            self.start_job_collectibles.add(Logfile(filename))
-            self.end_job_collectibles.add(Logfile(filename))
-            if add_per_test:
-                self.start_test_collectibles.add(Logfile(filename))
-                self.end_test_collectibles.add(Logfile(filename))
+        for fail_cmd in self.sysinfo_files["fail_commands"]:
+            self.end_fail_collectibles.add(Command(fail_cmd))
 
-        # As the system log path is not standardized between distros,
-        # we have to probe and find out the correct path.
-        try:
-            self.end_test_collectibles.add(self._get_syslog_watcher())
-        except ValueError as details:
-            log.info(details)
+        for filename in self.sysinfo_files["files"]:
+            self.start_collectibles.add(Logfile(filename))
+            self.end_collectibles.add(Logfile(filename))
 
-        self.end_test_collectibles.add(JournalctlWatcher())
+        for fail_filename in self.sysinfo_files["fail_files"]:
+            self.end_fail_collectibles.add(Logfile(fail_filename))
 
-    def _get_collectibles(self, hook):
-        collectibles = self.hook_mapping.get(hook)
-        if collectibles is None:
-            raise ValueError('Incorrect hook, valid hook names: %s' %
-                             self.hook_mapping.keys())
-        return collectibles
-
-    def add_cmd(self, cmd, hook):
-        """
-        Add a command collectible.
-
-        :param cmd: Command to log.
-        :param hook: In which hook this cmd should be logged (start job, end
-                     job).
-        """
-        collectibles = self._get_collectibles(hook)
-        collectibles.add(Command(cmd))
-
-    def add_file(self, filename, hook):
-        """
-        Add a system file collectible.
-
-        :param filename: Path to the file to be logged.
-        :param hook: In which hook this file should be logged (start job, end
-                     job).
-        """
-        collectibles = self._get_collectibles(hook)
-        collectibles.add(Logfile(filename))
-
-    def add_watcher(self, filename, hook):
-        """
-        Add a system file watcher collectible.
-
-        :param filename: Path to the file to be logged.
-        :param hook: In which hook this watcher should be logged
-                    (start job, end job).
-        """
-        collectibles = self._get_collectibles(hook)
-        collectibles.add(LogWatcher(filename))
+        self.end_collectibles.add(JournalctlWatcher())
 
     def _get_installed_packages(self):
         sm = software_manager.SoftwareManager()
@@ -567,11 +529,10 @@ class SysInfo(object):
         removed_packages = "\n".join(old_packages - new_packages) + "\n"
         genio.write_file(removed_path, removed_packages)
 
-    def start_job_hook(self):
-        """
-        Logging hook called whenever a job starts.
-        """
-        for log_hook in self.start_job_collectibles:
+    def start(self):
+        """Log all collectibles at the start of the event."""
+        os.environ['AVOCADO_SYSINFODIR'] = self.pre_dir
+        for log_hook in self.start_collectibles:
             if isinstance(log_hook, Daemon):  # log daemons in profile directory
                 log_hook.run(self.profile_dir)
             else:
@@ -580,41 +541,20 @@ class SysInfo(object):
         if self.log_packages:
             self._log_installed_packages(self.pre_dir)
 
-    def end_job_hook(self):
+    def end(self, status=""):
         """
         Logging hook called whenever a job finishes.
         """
-        for log_hook in self.end_job_collectibles:
+        os.environ['AVOCADO_SYSINFODIR'] = self.post_dir
+        for log_hook in self.end_collectibles:
             log_hook.run(self.post_dir)
+
+        if status == "FAIL":
+            for log_hook in self.end_fail_collectibles:
+                log_hook.run(self.post_dir)
+
         # Stop daemon(s) started previously
-        for log_hook in self.start_job_collectibles:
-            if isinstance(log_hook, Daemon):
-                log_hook.stop()
-
-        if self.log_packages:
-            self._log_modified_packages(self.post_dir)
-
-    def start_test_hook(self):
-        """
-        Logging hook called before a test starts.
-        """
-        for log_hook in self.start_test_collectibles:
-            if isinstance(log_hook, Daemon):  # log daemons in profile directory
-                log_hook.run(self.profile_dir)
-            else:
-                log_hook.run(self.pre_dir)
-
-        if self.log_packages:
-            self._log_installed_packages(self.pre_dir)
-
-    def end_test_hook(self):
-        """
-        Logging hook called after a test finishes.
-        """
-        for log_hook in self.end_test_collectibles:
-            log_hook.run(self.post_dir)
-        # Stop daemon(s) started previously
-        for log_hook in self.start_test_collectibles:
+        for log_hook in self.start_collectibles:
             if isinstance(log_hook, Daemon):
                 log_hook.stop()
 
@@ -622,21 +562,17 @@ class SysInfo(object):
             self._log_modified_packages(self.post_dir)
 
 
-def collect_sysinfo(args):
+def collect_sysinfo(basedir):
     """
     Collect sysinfo to a base directory.
-
-    :param args: :class:`argparse.Namespace` object with command line params.
     """
     output.add_log_handler(log.name)
-
-    basedir = args.sysinfodir
     if not basedir:
         cwd = os.getcwd()
         timestamp = time.strftime('%Y-%m-%d-%H.%M.%S')
         basedir = os.path.join(cwd, 'sysinfo-%s' % timestamp)
 
     sysinfo_logger = SysInfo(basedir=basedir)
-    sysinfo_logger.start_job_hook()
-    sysinfo_logger.end_job_hook()
+    sysinfo_logger.start()
+    sysinfo_logger.end()
     log.info("Logged system information to %s", basedir)

@@ -21,9 +21,10 @@ Module for all PCI devices related functions.
 """
 
 
-import re
 import os
-from . import process, genio
+import re
+
+from . import genio, process
 
 
 def get_domains():
@@ -32,14 +33,16 @@ def get_domains():
     Example, it returns ['0000', '0001', ...]
 
     :return: List of PCI domains.
+    :rtype: list of str
     """
     cmd = "lspci -D"
-    output = process.system_output(cmd, ignore_status=True)
+    output = process.run(cmd, ignore_status=True, shell=True).stdout_text
     if output:
         domains = []
         for line in output.splitlines():
             domains.append(line.split(":")[0])
         return list(set(domains))
+    return []
 
 
 def get_pci_addresses():
@@ -48,14 +51,16 @@ def get_pci_addresses():
     Does not return the PCI Bridges/Switches.
 
     :return: list of full PCI addresses including domain (0000:00:14.0)
+    :rtype: list of str
     """
     addresses = []
     cmd = "lspci -D"
-    for line in process.system_output(cmd).splitlines():
+    for line in process.run(cmd).stdout_text.splitlines():
         if not get_pci_prop(line.split()[0], 'Class').startswith('06'):
             addresses.append(line.split()[0])
     if addresses:
         return addresses
+    return []
 
 
 def get_num_interfaces_in_pci(dom_pci_address):
@@ -67,9 +72,11 @@ def get_num_interfaces_in_pci(dom_pci_address):
                             address (0000, 0000:00:1f, 0000:00:1f.2, etc)
 
     :return: number of devices in a PCI domain.
+    :rtype: int
     """
     cmd = "ls -l /sys/class/*/ -1"
-    output = process.system_output(cmd, ignore_status=True, shell=True)
+    output = process.run(cmd, ignore_status=True,
+                         shell=True).stdout_text
     if output:
         filt = '/%s' % dom_pci_address
         count = 0
@@ -77,6 +84,7 @@ def get_num_interfaces_in_pci(dom_pci_address):
             if filt in line:
                 count += 1
         return count
+    return 0
 
 
 def get_disks_in_pci_address(pci_address):
@@ -140,7 +148,8 @@ def get_pci_class_name(pci_address):
     :return: class name for corresponding pci bus address
     """
     pci_class_dic = {'0104': 'scsi_host', '0c04': 'fc_host',
-                     '0200': 'net', '0108': 'nvme', '0280': 'net'}
+                     '0200': 'net', '0108': 'nvme', '0280': 'net',
+                     '0207': 'net'}
     pci_class_id = get_pci_prop(pci_address, "Class")
     if pci_class_id not in pci_class_dic:
         if pci_class_id is None:
@@ -182,7 +191,7 @@ def get_slot_from_sysfs(full_pci_address):
     if not os.path.isfile("/proc/device-tree/%s/ibm,loc-code" % devspec):
         return
     slot = genio.read_file("/proc/device-tree/%s/ibm,loc-code" % devspec)
-    slot_ibm = re.match(r'((\w+)[.])+(\w+)-[P(\d+)-]*C(\d+)', slot)
+    slot_ibm = re.match(r'((\w+)[.])+(\w+)-[PC(\d+)-]*C(\d+)', slot)
     if slot_ibm:
         return slot_ibm.group()
     slot_openpower = re.match(r'(\w+)[\s]*(\w+)(\d*)', slot)
@@ -226,9 +235,10 @@ def get_pci_prop(pci_address, prop):
     :param part: prop of PCI ID.
 
     :return: specific PCI ID of a PCI address.
+    :rtype: str
     """
     cmd = "lspci -Dnvmm -s %s" % pci_address
-    output = process.system_output(cmd, ignore_status=True)
+    output = process.run(cmd, ignore_status=True, shell=True).stdout_text
     if output:
         for line in output.splitlines():
             if prop == line.split(':')[0]:
@@ -260,9 +270,10 @@ def get_driver(pci_address):
     :param pci_address: Any segment of a PCI address (1f, 0000:00:1f, ...)
 
     :return: driver of a PCI address.
+    :rtype: str
     """
     cmd = "lspci -ks %s" % pci_address
-    output = process.system_output(cmd, ignore_status=True)
+    output = process.run(cmd, ignore_status=True, shell=True).stdout_text
     if output:
         for line in output.splitlines():
             if 'Kernel driver in use:' in line:
@@ -279,9 +290,10 @@ def get_memory_address(pci_address):
     :param pci_address: Any segment of a PCI address (1f, 0000:00:1f, ...)
 
     :return: memory address of a pci_address.
+    :rtype: str
     """
     cmd = "lspci -bv -s %s" % pci_address
-    output = process.system_output(cmd, ignore_status=True)
+    output = process.run(cmd, ignore_status=True, shell=True).stdout_text
     if output:
         for line in output.splitlines():
             if 'Memory at' in line:
@@ -298,9 +310,10 @@ def get_mask(pci_address):
     :param pci_address: Any segment of a PCI address (1f, 0000:00:1f, ...)
 
     :return: mask of a PCI address.
+    :rtype: str
     """
     cmd = "lspci -vv -s %s" % pci_address
-    output = process.system_output(cmd, ignore_status=True)
+    output = process.run(cmd, ignore_status=True, shell=True).stdout_text
     if output:
         dic = {'K': 1024, 'M': 1048576, 'G': 1073741824}
         for line in output.splitlines():
@@ -323,9 +336,10 @@ def get_vpd(dom_pci_address):
                             least bus addr (0003:00, 0003:00:1f.2, ...)
 
     :return: dictionary of VPD of a PCI address.
+    :rtype: dict
     """
     cmd = "lsvpd -l %s" % dom_pci_address
-    vpd = process.system_output(cmd)
+    vpd = process.run(cmd).stdout_text
     vpd_dic = {}
     dev_list = []
     for line in vpd.splitlines():
@@ -357,9 +371,10 @@ def get_cfg(dom_pci_address):
                             least bus addr (0003:00, 0003:00:1f.2, ...)
 
     :return: dictionary of configuration data of a PCI address.
+    :rtype: dict
     """
     cmd = "lscfg -vl %s" % dom_pci_address
-    cfg = process.system_output(cmd)
+    cfg = process.run(cmd).stdout_text
     cfg_dic = {}
     desc = re.match(r'  (%s)( [-\w+,\.]+)+([ \n])+([-\w+, \(\)])+'
                     % dom_pci_address, cfg).group()

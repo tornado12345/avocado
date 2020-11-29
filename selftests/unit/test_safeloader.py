@@ -1,14 +1,13 @@
 import ast
-import sys
 import os
 import re
+import sys
 import unittest
 
 from avocado.core import safeloader
 from avocado.utils import script
 
 from .. import BASEDIR, setup_avocado_loggers
-
 
 setup_avocado_loggers()
 
@@ -33,8 +32,19 @@ class MyClass(Test):
         pass
 '''
 
-RECURSIVE_DISCOVERY_TEST1 = """
+IMPORT_NOT_NOT_PARENT_TEST = '''
 from avocado import Test
+class SomeClass(Test):
+    def test_something(self): pass
+
+from logging import Logger, LogRecord
+class Anyclass(LogRecord): pass
+class Anyclass(Logger): pass
+'''
+
+RECURSIVE_DISCOVERY_TEST1 = """
+# skip is not used, but stresses the safeloader
+from avocado import skip, Test
 
 class BaseClass(Test):
     def test_basic(self):
@@ -61,6 +71,34 @@ class ThirdChild(Test, SecondChild):
     :avocado: recursive
     '''
     def test_third_child(self):
+        pass
+"""
+
+
+RECURSIVE_DISCOVERY_PYTHON_UNITTEST = """
+# main is not used, but stresses the safeloader
+from unittest import main, TestCase
+
+class BaseClass(TestCase):
+    '''
+    :avocado: tags=base-tag
+    :avocado: tags=base.tag
+    '''
+    def test_maybe_replaced_by_child(self):
+        pass
+
+    def test_basic(self):
+        pass
+
+class Child(BaseClass):
+    '''
+    :avocado: tags=child-tag
+    :avocado: tags=child.tag
+    '''
+    def test_maybe_replaced_by_child(self):
+        pass
+
+    def test_child(self):
         pass
 """
 
@@ -96,7 +134,7 @@ class ModuleImportedAs(unittest.TestCase):
         self._test('import foo as foo', {'foo': 'foo'})
 
     def test_import_inside_class(self):
-        self._test("class Foo(object): import foo as foo", {})
+        self._test("class Foo: import foo as foo", {})
 
 
 class DocstringDirectives(unittest.TestCase):
@@ -137,6 +175,12 @@ class DocstringDirectives(unittest.TestCase):
                "tags=foo,bar",
                ":avocado: tags=SLOW,disk, invalid",
                ":avocado: tags=SLOW,disk , invalid"]
+
+    NO_REQS = [":AVOCADO: REQUIREMENT=['FOO':'BAR']",
+               ":avocado: requirement={'foo':'bar'}",
+               ":avocado: requirement={foo",
+               ":avocado: requirements=",
+               ":avocado: requirement="]
 
     def test_longline(self):
         docstring = ("This is a very long docstring in a single line. "
@@ -229,6 +273,20 @@ class DocstringDirectives(unittest.TestCase):
         exp = {"fast": None, "arch": set(["x86_64", "ppc64"])}
         self.assertEqual(safeloader.get_docstring_directives_tags(raw), exp)
 
+    def test_get_requirement_empty(self):
+        for req in self.NO_REQS:
+            self.assertEqual([], safeloader.get_docstring_directives_requirements(req))
+
+    def test_requirement_single(self):
+        raw = ":avocado: requirement={\"foo\":\"bar\"}"
+        exp = [{"foo": "bar"}]
+        self.assertEqual(safeloader.get_docstring_directives_requirements(raw), exp)
+
+    def test_requirement_double(self):
+        raw = ":avocado: requirement={\"foo\":\"bar\"}\n:avocado: requirement={\"uri\":\"http://foo.bar\"}"
+        exp = [{"foo": "bar"}, {"uri": "http://foo.bar"}]
+        self.assertEqual(safeloader.get_docstring_directives_requirements(raw), exp)
+
     def test_directives_regex(self):
         """
         Tests the regular expressions that deal with docstring directives
@@ -254,12 +312,15 @@ class FindClassAndMethods(UnlimitedDiff):
 
     def test_self(self):
         reference = {
-            'AvocadoModule': ['setUp',
-                              'test_add_imported_empty',
-                              'test_add_imported_object_from_module',
-                              'test_add_imported_object_from_module_asname',
-                              'test_is_not_avocado_test',
-                              'test_is_avocado_test'],
+            'PythonModuleSelf': ['setUp',
+                                 'test_add_imported_empty',
+                                 'test_add_imported_object_from_module',
+                                 'test_add_imported_object_from_module_asname',
+                                 'test_is_not_avocado_test',
+                                 'test_is_not_avocado_tests'],
+            'PythonModule': ['test_is_avocado_test',
+                             'test_import_of_all_module_level',
+                             'test_import_relative'],
             'ModuleImportedAs': ['_test',
                                  'test_foo',
                                  'test_foo_as_bar',
@@ -282,13 +343,18 @@ class FindClassAndMethods(UnlimitedDiff):
                                     'test_tag_keyval_single',
                                     'test_tag_keyval_double',
                                     'test_tag_keyval_duplicate',
+                                    'test_get_requirement_empty',
+                                    'test_requirement_single',
+                                    'test_requirement_double',
                                     'test_directives_regex'],
             'FindClassAndMethods': ['test_self',
                                     'test_with_pattern',
                                     'test_with_base_class',
                                     'test_with_pattern_and_base_class',
                                     'test_methods_order',
-                                    'test_recursive_discovery'],
+                                    'test_import_not_on_parent',
+                                    'test_recursive_discovery',
+                                    'test_recursive_discovery_python_unittest'],
             'UnlimitedDiff': ['setUp']
         }
         found = safeloader.find_class_and_methods(get_this_file())
@@ -296,11 +362,14 @@ class FindClassAndMethods(UnlimitedDiff):
 
     def test_with_pattern(self):
         reference = {
-            'AvocadoModule': ['test_add_imported_empty',
-                              'test_add_imported_object_from_module',
-                              'test_add_imported_object_from_module_asname',
-                              'test_is_not_avocado_test',
-                              'test_is_avocado_test'],
+            'PythonModuleSelf': ['test_add_imported_empty',
+                                 'test_add_imported_object_from_module',
+                                 'test_add_imported_object_from_module_asname',
+                                 'test_is_not_avocado_test',
+                                 'test_is_not_avocado_tests'],
+            'PythonModule': ['test_is_avocado_test',
+                             'test_import_of_all_module_level',
+                             'test_import_relative'],
             'ModuleImportedAs': ['test_foo',
                                  'test_foo_as_bar',
                                  'test_foo_as_foo',
@@ -322,13 +391,18 @@ class FindClassAndMethods(UnlimitedDiff):
                                     'test_tag_keyval_single',
                                     'test_tag_keyval_double',
                                     'test_tag_keyval_duplicate',
+                                    'test_get_requirement_empty',
+                                    'test_requirement_single',
+                                    'test_requirement_double',
                                     'test_directives_regex'],
             'FindClassAndMethods': ['test_self',
                                     'test_with_pattern',
                                     'test_with_base_class',
                                     'test_with_pattern_and_base_class',
                                     'test_methods_order',
-                                    'test_recursive_discovery'],
+                                    'test_import_not_on_parent',
+                                    'test_recursive_discovery',
+                                    'test_recursive_discovery_python_unittest'],
             'UnlimitedDiff': []
         }
         found = safeloader.find_class_and_methods(get_this_file(),
@@ -342,7 +416,9 @@ class FindClassAndMethods(UnlimitedDiff):
                                     'test_with_base_class',
                                     'test_with_pattern_and_base_class',
                                     'test_methods_order',
-                                    'test_recursive_discovery'],
+                                    'test_import_not_on_parent',
+                                    'test_recursive_discovery',
+                                    'test_recursive_discovery_python_unittest'],
         }
         found = safeloader.find_class_and_methods(get_this_file(),
                                                   base_class='UnlimitedDiff')
@@ -370,6 +446,17 @@ class FindClassAndMethods(UnlimitedDiff):
         self.assertEqual(expected_order, methods)
         avocado_keep_methods_order.remove()
 
+    def test_import_not_on_parent(self):
+        avocado_test = script.TemporaryScript(
+            'import_not_not_parent_test.py',
+            IMPORT_NOT_NOT_PARENT_TEST)
+        avocado_test.save()
+        expected = ['test_something']
+        tests = safeloader.find_avocado_tests(avocado_test.path)[0]
+        methods = [method[0] for method in tests['SomeClass']]
+        self.assertEqual(expected, methods)
+        avocado_test.remove()
+
     def test_recursive_discovery(self):
         avocado_recursive_discovery_test1 = script.TemporaryScript(
             'recursive_discovery_test1.py',
@@ -382,18 +469,46 @@ class FindClassAndMethods(UnlimitedDiff):
 
         sys.path.append(os.path.dirname(avocado_recursive_discovery_test1.path))
         tests = safeloader.find_avocado_tests(avocado_recursive_discovery_test2.path)[0]
-        expected = {'ThirdChild': [('test_third_child', {}),
-                                   ('test_second_child', {}),
-                                   ('test_first_child', {}),
-                                   ('test_basic', {})]}
+        expected = {'ThirdChild': [('test_third_child', {}, []),
+                                   ('test_second_child', {}, []),
+                                   ('test_first_child', {}, []),
+                                   ('test_basic', {}, [])]}
+        self.assertEqual(expected, tests)
+
+    def test_recursive_discovery_python_unittest(self):
+        temp_test = script.TemporaryScript(
+            'recursive_discovery_python_unittest.py',
+            RECURSIVE_DISCOVERY_PYTHON_UNITTEST)
+        temp_test.save()
+        tests = safeloader.find_python_unittests(temp_test.path)
+        expected = {'BaseClass': [('test_maybe_replaced_by_child',
+                                   {'base-tag': None,
+                                    'base.tag': None},
+                                   []),
+                                  ('test_basic',
+                                   {'base-tag': None,
+                                    'base.tag': None}, [])],
+                    'Child': [('test_maybe_replaced_by_child',
+                               {'child-tag': None,
+                                'child.tag': None},
+                               []),
+                              ('test_child', {'child-tag': None,
+                                              'child.tag': None},
+                               []),
+                              ('test_basic', {'base-tag': None,
+                                              'base.tag': None},
+                               [])]}
         self.assertEqual(expected, tests)
 
 
-class AvocadoModule(unittest.TestCase):
+class PythonModuleSelf(unittest.TestCase):
+    """
+    Has tests based on this source code file
+    """
 
     def setUp(self):
         self.path = os.path.abspath(os.path.dirname(get_this_file()))
-        self.module = safeloader.AvocadoModule(self.path)
+        self.module = safeloader.PythonModule(self.path)
 
     def test_add_imported_empty(self):
         self.assertEqual(self.module.imported_objects, {})
@@ -413,17 +528,48 @@ class AvocadoModule(unittest.TestCase):
                          os.path.join(self.path, 'foo', 'bar'))
 
     def test_is_not_avocado_test(self):
-        self.assertFalse(self.module.is_avocado_test(ast.ClassDef()))
+        self.assertFalse(self.module.is_matching_klass(ast.ClassDef()))
+
+    def test_is_not_avocado_tests(self):
+        for klass in self.module.iter_classes():
+            self.assertFalse(self.module.is_matching_klass(klass))
+
+
+class PythonModule(unittest.TestCase):
+    """
+    Has tests based on other Python source code files
+    """
 
     def test_is_avocado_test(self):
         passtest_path = os.path.join(BASEDIR, 'examples', 'tests', 'passtest.py')
-        passtest_module = safeloader.AvocadoModule(passtest_path)
+        passtest_module = safeloader.PythonModule(passtest_path)
         classes = [klass for klass in passtest_module.iter_classes()]
         # there's only one class and one *worthy* Test import in passtest.py
         self.assertEqual(len(classes), 1)
-        self.assertEqual(len(passtest_module.test_imports), 1)
+        self.assertEqual(len(passtest_module.klass_imports), 1)
         self.assertEqual(len(passtest_module.mod_imports), 0)
-        self.assertTrue(passtest_module.is_avocado_test(classes[0]))
+        self.assertTrue(passtest_module.is_matching_klass(classes[0]))
+
+    def test_import_of_all_module_level(self):
+        """
+        Checks if all levels of a module import are taken into account
+
+        This specific source file imports unittest.mock, and we want to
+        make sure that unittest is accounted for.
+        """
+        path = os.path.join(BASEDIR, 'selftests', 'unit', 'test_loader.py')
+        module = safeloader.PythonModule(path, 'unittest', 'TestCase')
+        for _ in module.iter_classes():
+            pass
+        self.assertIn('unittest', module.mod_imports)
+
+    def test_import_relative(self):
+        """Tests if relative imports are tracked on the module object."""
+        path = os.path.join(BASEDIR, 'selftests', 'functional', 'test_basic.py')
+        module = safeloader.PythonModule(path)
+        for _ in module.iter_classes():
+            pass
+        self.assertIn('TestCaseTmpDir', module.imported_objects)
 
 
 if __name__ == '__main__':

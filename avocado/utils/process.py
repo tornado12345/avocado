@@ -16,6 +16,7 @@
 Functions dedicated to find and run external commands.
 """
 
+import contextlib
 import errno
 import fnmatch
 import glob
@@ -24,22 +25,13 @@ import os
 import re
 import select
 import shlex
-import shutil
 import signal
-import stat
 import subprocess
-import sys
 import threading
 import time
-
 from io import BytesIO, UnsupportedOperation
-from six import string_types
 
-from . import astring
-from . import gdb
-from . import runtime
-from . import path
-from . import genio
+from . import astring, path
 from .wait import wait_for
 
 log = logging.getLogger('avocado.test')
@@ -79,7 +71,7 @@ _RE_BASH_SET_VARIABLE = re.compile(r"[a-zA-Z]\w*=.*")
 
 class CmdError(Exception):
 
-    def __init__(self, command=None, result=None, additional_text=None):
+    def __init__(self, command=None, result=None, additional_text=None):  # pylint: disable=W0231
         self.command = command
         self.result = result
         self.additional_text = additional_text
@@ -139,13 +131,13 @@ def safe_kill(pid, signal):  # pylint: disable=W0621
         try:
             run(kill_cmd, sudo=True)
             return True
-        except Exception:
+        except CmdError:
             return False
 
     try:
         os.kill(pid, signal)
         return True
-    except Exception:
+    except Exception:  # pylint: disable=W0703
         return False
 
 
@@ -153,8 +145,7 @@ def get_parent_pid(pid):
     """
     Returns the parent PID for the given process
 
-    TODO: this is currently Linux specific, and needs to implement
-    similar features for other platforms.
+    :note: This is currently Linux specific.
 
     :param pid: The PID of child process
     :returns: The parent PID
@@ -175,8 +166,7 @@ def get_children_pids(parent_pid, recursive=False):
     """
     Returns the children PIDs for the given process
 
-    TODO: this is currently Linux specific, and needs to implement
-    similar features for other platforms.
+    :note: This is currently Linux specific.
 
     :param parent_pid: The PID of parent child process
     :returns: The PIDs for the children processes
@@ -200,15 +190,15 @@ def get_children_pids(parent_pid, recursive=False):
     return children
 
 
-def kill_process_tree(pid, sig=signal.SIGKILL, send_sigcont=True,
-                      timeout=0):
+def kill_process_tree(pid, sig=None, send_sigcont=True, timeout=0):
     """
     Signal a process and all of its children.
 
     If the process does not exist -- return.
 
     :param pid: The pid of the process to signal.
-    :param sig: The signal to send to the processes.
+    :param sig: The signal to send to the processes, defaults to
+                :data:`signal.SIGKILL`
     :param send_sigcont: Send SIGCONT to allow killing stopped processes
     :param timeout: How long to wait for the pid(s) to die
                     (negative=infinity, 0=don't wait,
@@ -221,6 +211,9 @@ def kill_process_tree(pid, sig=signal.SIGKILL, send_sigcont=True,
             if pid_exists(pid):
                 return False
         return True
+
+    if sig is None:
+        sig = signal.SIGKILL
 
     if timeout > 0:
         start = time.time()
@@ -295,34 +288,20 @@ def binary_from_shell_cmd(cmd):
     :type cmd: unicode string
     :return: first found binary from the cmd
     """
-    cmds = cmd_split(cmd)
+    cmds = shlex.split(cmd)
     for item in cmds:
         if not _RE_BASH_SET_VARIABLE.match(item):
             return item
     raise ValueError("Unable to parse first binary from '%s'" % cmd)
 
 
-def cmd_split(cmd):
-    """
-    Splits a command line into individual components
-
-    This is a simple wrapper around :func:`shlex.split`, which has the
-    requirement of having text (not bytes) as its argument on Python 3,
-    but bytes on Python 2.
-
-    :param cmd: text (a multi byte string) encoded as 'utf-8'
-    """
-    if sys.version_info[0] < 3:
-        data = cmd.encode('utf-8')
-        result = shlex.split(data)
-        result = [i.decode('utf-8') for i in result]
-    else:
-        data = astring.to_text(cmd, 'utf-8')
-        result = shlex.split(data)
-    return result
+#: This is kept for compatibility purposes, but is now deprecated and
+#: will be removed in later versions.  Please use :func:`shlex.split`
+#: instead.
+cmd_split = shlex.split
 
 
-class CmdResult(object):
+class CmdResult:
 
     """
     Command execution result.
@@ -371,7 +350,7 @@ class CmdResult(object):
     def stdout_text(self):
         if hasattr(self.stdout, 'decode'):
             return self.stdout.decode(self.encoding)
-        if isinstance(self.stdout, string_types):
+        if isinstance(self.stdout, str):
             return self.stdout
         raise TypeError("Unable to decode stdout into a string-like type")
 
@@ -379,12 +358,12 @@ class CmdResult(object):
     def stderr_text(self):
         if hasattr(self.stderr, 'decode'):
             return self.stderr.decode(self.encoding)
-        if isinstance(self.stderr, string_types):
+        if isinstance(self.stderr, str):
             return self.stderr
         raise TypeError("Unable to decode stderr into a string-like type")
 
 
-class FDDrainer(object):
+class FDDrainer:
 
     def __init__(self, fd, result, name=None, logger=None, logger_prefix='%s',
                  stream_logger=None, ignore_bg_processes=False, verbose=False):
@@ -430,6 +409,14 @@ class FDDrainer(object):
         self._ignore_bg_processes = ignore_bg_processes
         self._verbose = verbose
 
+    def _log_line(self, line, newline_for_stream='\n'):
+        line = astring.to_text(line, self._result.encoding,
+                               'replace')
+        if self._logger is not None:
+            self._logger.debug(self._logger_prefix, line)
+        if self._stream_logger is not None:
+            self._stream_logger.debug(line + newline_for_stream)
+
     def _drainer(self):
         """
         Read from fd, storing and optionally logging the output
@@ -450,23 +437,14 @@ class FDDrainer(object):
             self.data.write(tmp)
             if self._verbose:
                 bfr += tmp
-                if tmp.endswith(b'\n'):
-                    for line in bfr.splitlines():
-                        line = astring.to_text(line, self._result.encoding,
-                                               'replace')
-                        if self._logger is not None:
-                            self._logger.debug(self._logger_prefix, line)
-                        if self._stream_logger is not None:
-                            self._stream_logger.debug(line)
-                    bfr = b''
-        # Write the rest of the bfr unfinished by \n
-        if self._verbose and bfr:
-            for line in bfr.splitlines():
-                line = astring.to_text(line, self._result.encoding, 'replace')
-                if self._logger is not None:
-                    self._logger.debug(self._logger_prefix, line)
-                if self._stream_logger is not None:
-                    self._stream_logger.debug(line)
+                lines = bfr.splitlines()
+                for line in lines[:-1]:
+                    self._log_line(line)
+                if bfr.endswith(b'\n'):
+                    self._log_line(lines[-1])
+                else:
+                    self._log_line(lines[-1], '')
+                bfr = b''
 
     def start(self):
         self._thread = threading.Thread(target=self._drainer, name=self.name)
@@ -493,7 +471,7 @@ class FDDrainer(object):
                     handler.close()
 
 
-class SubProcess(object):
+class SubProcess:
 
     """
     Run a subprocess in the background, collecting stdout/stderr streams.
@@ -607,7 +585,7 @@ class SubProcess(object):
     def _prepend_sudo(cmd, shell):
         if os.getuid() != 0:
             try:
-                sudo_cmd = '%s -n' % path.find_command('sudo')
+                sudo_cmd = '%s -n' % path.find_command('sudo', check_exec=False)
             except path.CmdNotFoundError as details:
                 log.error(details)
                 log.error('Parameter sudo=True provided, but sudo was '
@@ -625,7 +603,7 @@ class SubProcess(object):
             if self.verbose:
                 log.info("Running '%s'", self.cmd)
             if self.shell is False:
-                cmd = cmd_split(self.cmd)
+                cmd = shlex.split(self.cmd)
             else:
                 cmd = self.cmd
             try:
@@ -642,20 +620,14 @@ class SubProcess(object):
                 details.strerror += " (%s)" % self.cmd
                 raise details
 
-            self.start_time = time.time()
+            self.start_time = time.time()  # pylint: disable=W0201
 
-            # The Thread to be started by the FDDrainer cannot have a name
-            # from a non-ascii string (this is a Python 2 internal limitation).
-            # To keep some relation between the command name and the Thread
-            # this resorts to attempting the conversion to ascii, replacing
-            # characters it can not convert
-            cmd_name = self.cmd.encode('ascii', 'replace')
             # prepare fd drainers
             if self.allow_output_check == 'combined':
                 self._combined_drainer = FDDrainer(
                     self._popen.stdout.fileno(),
                     self.result,
-                    name="%s-combined" % cmd_name,
+                    name="%s-combined" % self.cmd,
                     logger=log,
                     logger_prefix="[output] %s",
                     # FIXME, in fact, a new log has to be used here
@@ -674,7 +646,7 @@ class SubProcess(object):
                 self._stdout_drainer = FDDrainer(
                     self._popen.stdout.fileno(),
                     self.result,
-                    name="%s-stdout" % cmd_name,
+                    name="%s-stdout" % self.cmd,
                     logger=log,
                     logger_prefix="[stdout] %s",
                     stream_logger=stdout_stream_logger,
@@ -683,7 +655,7 @@ class SubProcess(object):
                 self._stderr_drainer = FDDrainer(
                     self._popen.stderr.fileno(),
                     self.result,
-                    name="%s-stderr" % cmd_name,
+                    name="%s-stderr" % self.cmd,
                     logger=log,
                     logger_prefix="[stderr] %s",
                     stream_logger=stderr_stream_logger,
@@ -770,6 +742,8 @@ class SubProcess(object):
     def terminate(self):
         """
         Send a :attr:`signal.SIGTERM` to the process.
+        Please consider using :meth:`stop` instead if you want to
+        do all that's possible to finalize the process and wait for it to finish.
         """
         self._init_subprocess()
         self.send_signal(signal.SIGTERM)
@@ -777,6 +751,8 @@ class SubProcess(object):
     def kill(self):
         """
         Send a :attr:`signal.SIGKILL` to the process.
+        Please consider using :meth:`stop` instead if you want to
+        do all that's possible to finalize the process and wait for it to finish.
         """
         self._init_subprocess()
         self.send_signal(signal.SIGKILL)
@@ -789,12 +765,12 @@ class SubProcess(object):
         """
         self._init_subprocess()
         if self.is_sudo_enabled():
-            for child_pid in get_children_pids(self.get_pid()):
-                kill_child_cmd = 'kill -%d %d' % (int(sig), child_pid)
-                try:
-                    run(kill_child_cmd, sudo=True)
-                except Exception:
-                    continue
+            pids = get_children_pids(self.get_pid())
+            pids.append(self.get_pid())
+            for pid in pids:
+                kill_cmd = 'kill -%d %d' % (int(sig), pid)
+                with contextlib.suppress(Exception):
+                    run(kill_cmd, sudo=True)
         else:
             self._popen.send_signal(sig)
 
@@ -826,14 +802,14 @@ class SubProcess(object):
                                        % (time.time() - self.start_time))
             try:
                 kill_process_tree(self.get_pid(), sig, timeout=1)
-            except Exception:
+            except RuntimeError:
                 try:
                     kill_process_tree(self.get_pid(), signal.SIGKILL,
                                       timeout=1)
                     log.warning("Process '%s' refused to die in 1s after "
                                 "sending %s to, destroyed it successfully "
                                 "using SIGKILL.", self.cmd, sig)
-                except Exception:
+                except RuntimeError:
                     log.error("Process '%s' refused to die in 1s after "
                               "sending %s, followed by SIGKILL, probably "
                               "dealing with a zombie process.", self.cmd,
@@ -868,17 +844,24 @@ class SubProcess(object):
         self._fill_results(rc)
         return rc
 
-    def stop(self):
+    def stop(self, timeout=None):
         """
         Stop background subprocess.
 
         Call this method to terminate the background subprocess and
         wait for it results.
+
+        :param timeout: Time (seconds) we'll wait until the process is
+                        finished. If it's not, we'll try to terminate it
+                        and it's children using ``sig`` and get a
+                        status. When the process refuses to die
+                        within 1s we use SIGKILL and report the status
+                        (be it exit_code or zombie)
         """
         self._init_subprocess()
         if self.result.exit_status is None:
             self.terminate()
-        return self.wait()
+        return self.wait(timeout)
 
     def get_pid(self):
         """
@@ -948,333 +931,6 @@ class WrapSubProcess(SubProcess):
                                              ignore_bg_processes, encoding)
 
 
-class GDBSubProcess(object):
-
-    """
-    Runs a subprocess inside the GNU Debugger
-    """
-
-    def __init__(self, cmd, verbose=True, allow_output_check=None, shell=False,  # pylint: disable=W0613
-                 env=None, sudo=False, ignore_bg_processes=False, encoding=None):  # pylint: disable=W0613
-        """
-        Creates the subprocess object, stdout/err, reader threads and locks.
-
-        :param cmd: Command line to run.
-        :type cmd: str
-        :params verbose: Currently ignored in GDBSubProcess
-        :param allow_output_check: Currently ignored in GDBSubProcess
-        :param shell: Currently ignored in GDBSubProcess
-        :param env: Currently ignored in GDBSubProcess
-        :param sudo: Currently ignored in GDBSubProcess
-        :param ignore_bg_processes: Currently ignored in GDBSubProcess
-        :param encoding: the encoding to use for the text representation
-                         of the command result stdout and stderr, by default
-                         :data:`avocado.utils.astring.ENCODING`
-        :type encoding: str
-        """
-        if encoding is None:
-            encoding = astring.ENCODING
-        self.cmd = cmd
-
-        self.args = cmd_split(cmd)
-        self.binary = self.args[0]
-        self.binary_path = os.path.abspath(self.cmd)
-        self.result = CmdResult(cmd, encoding=encoding)
-
-        self.gdb_server = gdb.GDBServer(gdb.GDBSERVER_PATH)
-        self.gdb = gdb.GDB(gdb.GDB_PATH)
-        self.gdb.connect(self.gdb_server.port)
-        self.gdb.set_file(self.binary)
-
-    def _get_breakpoints(self):
-        breakpoints = []
-        for expr in gdb.GDB_RUN_BINARY_NAMES_EXPR:
-            expr_binary_name, break_point = split_gdb_expr(expr)
-            binary_name = os.path.basename(self.binary)
-            if expr_binary_name == binary_name:
-                breakpoints.append(break_point)
-
-        if not breakpoints:
-            breakpoints.append(gdb.GDB.DEFAULT_BREAK)
-        return breakpoints
-
-    def create_and_wait_on_resume_fifo(self, path):  # pylint: disable=W0621
-        """
-        Creates a FIFO file and waits until it's written to
-
-        :param path: the path that the file will be created
-        :type path: str
-        :returns: first character that was written to the fifo
-        :rtype: str
-        """
-        os.mkfifo(path)
-        with open(path, 'r') as fifo_file:
-            c = fifo_file.read(1)
-        os.unlink(path)
-        return c
-
-    def generate_gdb_connect_cmds(self):
-        current_test = runtime.CURRENT_TEST
-        if current_test is not None:
-            binary_name = os.path.basename(self.binary)
-            script_name = '%s.gdb.connect_commands' % binary_name
-            script_path = os.path.join(current_test.outputdir, script_name)
-            with open(script_path, 'w') as cmds_file:
-                cmds_file.write('file %s\n' % os.path.abspath(self.binary))
-                cmds_file.write('target extended-remote :%s\n' % self.gdb_server.port)
-            return script_path
-
-    def generate_gdb_connect_sh(self):
-        cmds = self.generate_gdb_connect_cmds()
-        if not cmds:
-            return
-
-        current_test = runtime.CURRENT_TEST
-        if current_test is not None:
-            binary_name = os.path.basename(self.binary)
-
-            fifo_name = "%s.gdb.cont.fifo" % os.path.basename(binary_name)
-            fifo_path = os.path.join(current_test.outputdir, fifo_name)
-
-            script_name = '%s.gdb.sh' % binary_name
-            script_path = os.path.join(current_test.outputdir, script_name)
-
-            with open(script_path, 'w') as script_file:
-                script_file.write("#!/bin/sh\n")
-                script_file.write("%s -x %s\n" % (gdb.GDB_PATH, cmds))
-                script_file.write("echo -n 'C' > %s\n" % fifo_path)
-            os.chmod(script_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
-            return (script_path, fifo_path)
-
-    def generate_core(self):
-        core_name = "%s.core" % os.path.basename(self.binary)
-        core_path = os.path.join(runtime.CURRENT_TEST.outputdir, core_name)
-        gcore_cmd = 'gcore %s' % core_path
-        r = self.gdb.cli_cmd(gcore_cmd)
-        if not r.result.class_ == 'done':
-            raise gdb.UnexpectedResponseError
-        # also copy the binary as it's needed with the core
-        shutil.copy(self.binary, runtime.CURRENT_TEST.outputdir)
-        return core_path
-
-    def handle_break_hit(self, response):  # pylint: disable=W0613
-        self.gdb.disconnect()
-        script_path, fifo_path = self.generate_gdb_connect_sh()
-
-        msg = ("\n\nTEST PAUSED because of debugger breakpoint. "
-               "To DEBUG your application run:\n%s\n\n"
-               "NOTE: please use *disconnect* command in gdb before exiting, "
-               "or else the debugged process will be KILLED\n" % script_path)
-
-        runtime.CURRENT_TEST.paused = msg
-        runtime.CURRENT_TEST.report_state()
-        runtime.CURRENT_TEST.paused = ''
-
-        ret = self.create_and_wait_on_resume_fifo(fifo_path)
-        runtime.CURRENT_TEST.paused = ("\rResuming ...")
-        runtime.CURRENT_TEST.report_state()
-        runtime.CURRENT_TEST.paused = ''
-        return ret
-
-    def handle_fatal_signal(self, response):  # pylint: disable=W0613
-        script_path, fifo_path = self.generate_gdb_connect_sh()
-
-        msg = ("\n\nTEST PAUSED because inferior process received a FATAL SIGNAL. "
-               "To DEBUG your application run:\n%s\n\n" % script_path)
-
-        if gdb.GDB_ENABLE_CORE:
-            core = self.generate_core()
-            msg += ("\nAs requested, a core dump has been generated "
-                    "automatically at the following location:\n%s\n") % core
-
-        self.gdb.disconnect()
-
-        runtime.CURRENT_TEST.paused = msg
-        runtime.CURRENT_TEST.report_state()
-        runtime.CURRENT_TEST.paused = ''
-
-        ret = self.create_and_wait_on_resume_fifo(fifo_path)
-        runtime.CURRENT_TEST.paused = ("\rResuming ...")
-        runtime.CURRENT_TEST.report_state()
-        runtime.CURRENT_TEST.paused = ''
-        return ret
-
-    def _is_thread_stopped(self):
-        result = False
-        thread_info_result = self.gdb.cmd("-thread-info")
-        thread_info_mi_result = thread_info_result.result
-        if hasattr(thread_info_mi_result, 'result'):
-            thread_info = thread_info_mi_result.result
-            current_thread = thread_info.current_thread_id
-            for thread in thread_info.threads:
-                if current_thread == thread.id and thread.state == "stopped":
-                    result = True
-                    break
-        return result
-
-    @staticmethod
-    def _get_exit_status(parsed_msg):
-        """
-        Returns the exit code converted to an integer
-        """
-        code = parsed_msg.result.exit_code
-        if (code.startswith('0x') and len(code) > 2):
-            return int(code[2:], 16)
-        elif (code.startswith('0') and len(code) > 1):
-            return int(code[1:], 8)
-        else:
-            return int(code)
-
-    def wait_for_exit(self):
-        """
-        Waits until debugger receives a message about the binary exit
-        """
-        result = False
-        messages = []
-        while True:
-            try:
-                msgs = self.gdb.read_until_break()
-                messages += msgs
-            except Exception:
-                pass
-
-            try:
-                msg = messages.pop(0)
-                parsed_msg = gdb.parse_mi(msg)
-
-                if gdb.is_exit(parsed_msg):
-                    self.result.exit_status = self._get_exit_status(parsed_msg)
-                    result = True
-                    break
-
-                elif gdb.is_break_hit(parsed_msg):
-                    # waits on fifo read() until end of debug session is notified
-                    r = self.handle_break_hit(parsed_msg)
-                    if r == 'C':
-                        self.gdb.connect(self.gdb_server.port)
-                        if self._is_thread_stopped():
-                            r = self.gdb.cli_cmd("continue")
-                        else:
-                            log.warn('Binary "%s" terminated inside the '
-                                     'debugger before avocado was resumed. '
-                                     'Because important information about the '
-                                     'process was lost the results is '
-                                     'undefined. The test is going to be '
-                                     'skipped. Please let avocado finish the '
-                                     'the execution of your binary to have '
-                                     'dependable results.', self.binary)
-                            # pylint: disable=E0702
-                            if UNDEFINED_BEHAVIOR_EXCEPTION is not None:
-                                raise UNDEFINED_BEHAVIOR_EXCEPTION
-
-                elif gdb.is_fatal_signal(parsed_msg):
-                    # waits on fifo read() until end of debug session is notified
-                    r = self.handle_fatal_signal(parsed_msg)
-                    log.warn('Because "%s" received a fatal signal, this test '
-                             'is going to be skipped.', self.binary)
-                    # pylint: disable=E0702
-                    if UNDEFINED_BEHAVIOR_EXCEPTION is not None:
-                        raise UNDEFINED_BEHAVIOR_EXCEPTION
-
-            except IndexError:
-                continue
-
-        return result
-
-    def _run_pre_commands(self):
-        """
-        Run commands if user passed a commands file with --gdb-prerun-commands
-        """
-        binary_name = os.path.basename(self.binary)
-        # The commands file can be specific to a given binary or universal,
-        # start checking for specific ones first
-        prerun_commands_path = gdb.GDB_PRERUN_COMMANDS.get(
-            binary_name,
-            gdb.GDB_PRERUN_COMMANDS.get('', None))
-
-        if prerun_commands_path is not None:
-            for command in genio.read_all_lines(prerun_commands_path):
-                self.gdb.cmd(command)
-
-    def run(self, timeout=None):  # pylint: disable=W0613
-        for b in self._get_breakpoints():
-            self.gdb.set_break(b, ignore_error=True)
-
-        self._run_pre_commands()
-        self.gdb.run(self.args[1:])
-
-        # Collect gdbserver stdout and stderr file information for debugging
-        # based on its process ID and stream (stdout or stderr)
-        current_test = runtime.CURRENT_TEST
-        if current_test is not None:
-            stdout_name = 'gdbserver.%s.stdout' % self.gdb_server.process.pid
-            stdout_path = os.path.join(current_test.logdir, stdout_name)
-            stderr_name = 'gdbserver.%s.stderr' % self.gdb_server.process.pid
-            stderr_path = os.path.join(current_test.logdir, stderr_name)
-
-        while True:
-            r = self.wait_for_exit()
-            if r:
-                self.gdb.disconnect()
-
-                # Now collect the gdbserver stdout and stderr file themselves
-                # and populate the CommandResult stdout and stderr
-                if current_test is not None:
-                    if os.path.exists(self.gdb_server.stdout_path):
-                        shutil.copy(self.gdb_server.stdout_path, stdout_path)
-                        self.result.stdout = genio.read_file(stdout_path)
-                    if os.path.exists(self.gdb_server.stderr_path):
-                        shutil.copy(self.gdb_server.stderr_path, stderr_path)
-                        self.result.stderr = genio.read_file(stderr_path)
-
-                self.gdb_server.exit()
-                return self.result
-
-
-def split_gdb_expr(expr):
-    """
-    Splits a GDB expr into (binary_name, breakpoint_location)
-
-    Returns :attr:`avocado.gdb.GDB.DEFAULT_BREAK` as the default breakpoint
-    if one is not given.
-
-    :param expr: an expression of the form <binary_name>[:<breakpoint>]
-    :type expr: str
-    :returns: a (binary_name, breakpoint_location) tuple
-    :rtype: tuple
-    """
-    expr_split = expr.split(':', 1)
-    if len(expr_split) == 2:
-        r = tuple(expr_split)
-    else:
-        r = (expr_split[0], gdb.GDB.DEFAULT_BREAK)
-    return r
-
-
-def should_run_inside_gdb(cmd):
-    """
-    Whether the given command should be run inside the GNU debugger
-
-    :param cmd: the command arguments, from where we extract the binary name
-    """
-    if not gdb.GDB_RUN_BINARY_NAMES_EXPR:
-        return False
-
-    try:
-        args = cmd_split(cmd)
-    except ValueError:
-        log.warning("Unable to check whether command '%s' should run inside "
-                    "GDB, fallback to simplified method...", cmd)
-        args = cmd.split()
-    cmd_binary_name = os.path.basename(args[0])
-
-    for expr in gdb.GDB_RUN_BINARY_NAMES_EXPR:
-        binary_name = os.path.basename(expr.split(':', 1)[0])
-        if cmd_binary_name == binary_name:
-            return True
-    return False
-
-
 def should_run_inside_wrapper(cmd):
     """
     Whether the given command should be run inside the wrapper utility.
@@ -1283,7 +939,7 @@ def should_run_inside_wrapper(cmd):
     """
     global CURRENT_WRAPPER  # pylint: disable=W0603
     CURRENT_WRAPPER = None
-    args = cmd_split(cmd)
+    args = shlex.split(cmd)
     cmd_binary_name = args[0]
 
     for script, cmd_expr in WRAP_PROCESS_NAMES_EXPR:
@@ -1307,9 +963,7 @@ def get_sub_process_klass(cmd):
 
     :param cmd: the command arguments, from where we extract the binary name
     """
-    if should_run_inside_gdb(cmd):
-        return GDBSubProcess
-    elif should_run_inside_wrapper(cmd):
+    if should_run_inside_wrapper(cmd):
         return WrapSubProcess
     else:
         return SubProcess
@@ -1643,10 +1297,27 @@ def getstatusoutput(cmd, timeout=None, verbose=False, ignore_status=True,
 def get_owner_id(pid):
     """
     Get the owner's user id of a process
-    param pid: process id
-    return: user id of the process owner
+
+    :param pid: the process id
+    :return: user id of the process owner
     """
     try:
         return os.stat('/proc/%d/' % pid).st_uid
     except OSError:
         return None
+
+
+def get_command_output_matching(command, pattern):
+    """
+    Runs a command, and if the pattern is in in the output, returns it.
+
+    :param command: the command to execute
+    :type command: str
+    :param pattern: pattern to search in the output, in a line by line basis
+    :type pattern: str
+
+    :return: list of lines matching the pattern
+    :rtype: list of str
+    """
+    return [line for line in run(command).stdout_text.splitlines()
+            if pattern in line]

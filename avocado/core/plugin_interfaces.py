@@ -16,19 +16,20 @@
 import abc
 
 
-class Plugin(object):
+class Plugin(metaclass=abc.ABCMeta):
+    """Base for all plugins."""
 
-    __metaclass__ = abc.ABCMeta
 
-    """
-    Base for all plugins
-    """
+class Init(Plugin):
+    """Base plugin interface for plugins that needs to initialize itself."""
+
+    @abc.abstractmethod
+    def initialize(self):
+        """Entry point for the plugin to perform its initialization."""
 
 
 class Settings(Plugin):
-
-    """
-    Base plugin to allow modifying settings.
+    """Base plugin to allow modifying settings.
 
     Currently it only supports to extend/modify the default list of
     paths to config files.
@@ -36,15 +37,11 @@ class Settings(Plugin):
 
     @abc.abstractmethod
     def adjust_settings_paths(self, paths):
-        """
-        Entry point where plugin can modify the list of configuration paths
-        """
+        """Entry point where plugin can modify the list of configuration paths."""
 
 
 class CLI(Plugin):
-
-    """
-    Base plugin interface for adding options (non-commands) to the command line
+    """Base plugin interface for adding options (non-commands) to the command line.
 
     Plugins that want to add extra options to the core command line application
     or to sub commands should use the 'avocado.plugins.cli' namespace.
@@ -52,14 +49,11 @@ class CLI(Plugin):
 
     @abc.abstractmethod
     def configure(self, parser):
-        """
-        Configures the command line parser with options specific to this plugin
-        """
+        """Configures the command line parser with options specific to this plugin."""
 
     @abc.abstractmethod
-    def run(self, args):
-        """
-        Execute any action the plugin intends.
+    def run(self, config):
+        """Execute any action the plugin intends.
 
         Example of action may include activating a special features upon
         finding that the requested command line options were set by the user.
@@ -70,9 +64,7 @@ class CLI(Plugin):
 
 
 class CLICmd(Plugin):
-
-    """
-    Base plugin interface for adding new commands to the command line app
+    """Base plugin interface for adding new commands to the command line app.
 
     Plugins that want to add extensions to the run command should use the
     'avocado.plugins.cli.cmd' namespace.
@@ -81,8 +73,7 @@ class CLICmd(Plugin):
     description = None
 
     def configure(self, parser):
-        """
-        Lets the extension add command line options and do early configuration
+        """Lets the extension add command line options and do early configuration.
 
         By default it will register its `name` as the command name and give
         its `description` as the help message.
@@ -96,16 +87,12 @@ class CLICmd(Plugin):
         return parser
 
     @abc.abstractmethod
-    def run(self, args):
-        """
-        Entry point for actually running the command
-        """
+    def run(self, config):
+        """Entry point for actually running the command."""
 
 
 class JobPre(Plugin):
-
-    """
-    Base plugin interface for adding actions before a job runs
+    """Base plugin interface for adding actions before a job runs.
 
     Plugins that want to add actions to be run before a job runs,
     should use the 'avocado.plugins.job.prepost' namespace and
@@ -114,15 +101,11 @@ class JobPre(Plugin):
 
     @abc.abstractmethod
     def pre(self, job):
-        """
-        Entry point for actually running the pre job action
-        """
+        """Entry point for actually running the pre job action."""
 
 
 class JobPost(Plugin):
-
-    """
-    Base plugin interface for adding actions after a job runs
+    """Base plugin interface for adding actions after a job runs.
 
     Plugins that want to add actions to be run after a job runs,
     should use the 'avocado.plugins.job.prepost' namespace and
@@ -131,17 +114,14 @@ class JobPost(Plugin):
 
     @abc.abstractmethod
     def post(self, job):
-        """
-        Entry point for actually running the post job action
-        """
+        """Entry point for actually running the post job action."""
 
 
 class Result(Plugin):
 
     @abc.abstractmethod
     def render(self, result, job):
-        """
-        Entry point with method that renders the result
+        """Entry point with method that renders the result.
 
         This will usually be used to write the result to a file or directory.
 
@@ -153,9 +133,7 @@ class Result(Plugin):
 
 
 class JobPreTests(Plugin):
-
-    """
-    Base plugin interface for adding actions before a job runs tests
+    """Base plugin interface for adding actions before a job runs tests.
 
     This interface looks similar to :class:`JobPre`, but it's intended
     to be called at a very specific place, that is, between
@@ -165,15 +143,11 @@ class JobPreTests(Plugin):
 
     @abc.abstractmethod
     def pre_tests(self, job):
-        """
-        Entry point for job running actions before tests execution
-        """
+        """Entry point for job running actions before tests execution."""
 
 
 class JobPostTests(Plugin):
-
-    """
-    Base plugin interface for adding actions after a job runs tests
+    """Base plugin interface for adding actions after a job runs tests.
 
     Plugins using this interface will run at the a time equivalent to
     plugins using the :class:`JobPost` interface, that is, at
@@ -185,15 +159,11 @@ class JobPostTests(Plugin):
 
     @abc.abstractmethod
     def post_tests(self, job):
-        """
-        Entry point for job running actions after the tests execution
-        """
+        """Entry point for job running actions after the tests execution."""
 
 
 class ResultEvents(JobPreTests, JobPostTests):
-
-    """
-    Base plugin interface for event based (stream-able) results
+    """Base plugin interface for event based (stream-able) results.
 
     Plugins that want to add actions to be run after a job runs,
     should use the 'avocado.plugins.result_events' namespace and
@@ -202,34 +172,23 @@ class ResultEvents(JobPreTests, JobPostTests):
 
     @abc.abstractmethod
     def start_test(self, result, state):
-        """
-        Event triggered when a test starts running
-        """
+        """Event triggered when a test starts running."""
 
     @abc.abstractmethod
     def test_progress(self, progress=False):
-        """
-        Interface to notify progress (or not) of the running test
-        """
+        """Interface to notify progress (or not) of the running test."""
 
     @abc.abstractmethod
     def end_test(self, result, state):
-        """
-        Event triggered when a test finishes running
-        """
+        """Event triggered when a test finishes running."""
 
 
 class Varianter(Plugin):
-
-    """
-    Base plugin interface for producing test variants usually from cmd line
-    options
-    """
+    """Base plugin interface for producing test variants."""
 
     @abc.abstractmethod
     def __iter__(self):
-        """
-        Yields all variants
+        """Yields all variants.
 
         The variant is defined as dictionary with at least:
          * variant_id - name of the current variant
@@ -241,22 +200,11 @@ class Varianter(Plugin):
 
     @abc.abstractmethod
     def __len__(self):
-        """
-        Report number of variants
-        """
-
-    @abc.abstractmethod
-    def update_defaults(self, defaults):
-        """
-        Add default values
-
-        :note: Those values should not be part of the variant_id
-        """
+        """Report number of variants."""
 
     @abc.abstractmethod
     def to_str(self, summary, variants, **kwargs):
-        """
-        Return human readable representation
+        """Return human readable representation.
 
         The summary/variants accepts verbosity where 0 means silent and
         maximum is up to the plugin.
@@ -265,4 +213,87 @@ class Varianter(Plugin):
         :param variants: How verbose list of variants to output (int)
         :param kwargs: Other free-form arguments
         :rtype: str
+        """
+
+
+class Resolver(Plugin):
+    """Base plugin interface for resolving test references into resolutions."""
+
+    @abc.abstractmethod
+    def resolve(self, reference):
+        """Resolves the given reference into a reference resolution.
+
+        :param reference: a specification that can eventually be resolved
+                          into a test (in the form of a
+                          :class:`avocado.core.nrunner.Runnable`)
+        :type reference: str
+        :returns: the result of the resolution process, containing the
+                  success, failure or error, along with zero or more
+                  :class:`avocado.core.nrunner.Runnable` objects
+        :rtype: :class:`avocado.core.resolver.ReferenceResolution`
+        """
+
+
+class Runner(Plugin):
+    """Base plugin interface for test runners.
+
+    This is the interface a job uses to drive the tests execution via
+    compliant test runners.
+
+    NOTE: This interface is not to be confused with the internal
+    interface or idiosyncrasies of the :ref:`nrunner`.
+    """
+
+    @abc.abstractmethod
+    def run_suite(self, job, test_suite):
+        """Run one or more tests and report with test result.
+
+        :param job: an instance of :class:`avocado.core.job.Job`.
+        :param test_suite: an instance of TestSuite with some tests to run.
+        :return: a set with types of test failures.
+        """
+
+
+class Spawner(Plugin):
+    """Base plugin interface spawners of tasks.
+
+    A spawner implementation will spawn a runner in its intended
+    location, and isolation model.  It's supposed to be generic enough
+    that it can perform that in the local machine using a process as an
+    isolation model, or in a virtual machine, using the virtual
+    machine itself as the isolation model.
+    """
+
+    @staticmethod
+    @abc.abstractmethod
+    def is_task_alive(runtime_task):
+        """Determines if a task is alive or not.
+
+        :param runtime_task: wrapper for a Task with additional runtime information
+        :type runtime_task: :class:`avocado.core.task.runtime.RuntimeTask`
+        """
+
+    @abc.abstractmethod
+    async def spawn_task(self, runtime_task):
+        """Spawns a task return whether the spawning was successful.
+
+        :param runtime_task: wrapper for a Task with additional runtime information
+        :type runtime_task: :class:`avocado.core.task.runtime.RuntimeTask`
+        """
+
+    @abc.abstractmethod
+    async def wait_task(self, runtime_task):
+        """Waits for a task to finish.
+
+        :param runtime_task: wrapper for a Task with additional runtime information
+        :type runtime_task: :class:`avocado.core.task.runtime.RuntimeTask`
+        """
+
+    @staticmethod
+    @abc.abstractmethod
+    async def check_task_requirements(runtime_task):
+        """Checks if the requirements described within a task are available.
+
+        :param runtime_task: wrapper for a Task with additional runtime information
+        :type runtime_task: :class:`avocado.core.task.runtime.RuntimeTask`
         """

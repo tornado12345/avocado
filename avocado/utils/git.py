@@ -16,17 +16,15 @@
 APIs to download/update git repositories from inside python scripts.
 """
 
-import os
 import logging
+import os
 
-from . import process
-from . import astring
-from . import path
+from . import astring, path, process
 
 __all__ = ["GitRepoHelper", "get_repo"]
 
 
-class GitRepoHelper(object):
+class GitRepoHelper:
 
     """
     Helps to deal with git repos, mostly fetching content from a repo

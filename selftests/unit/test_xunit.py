@@ -1,37 +1,33 @@
-import argparse
 import os
-import shutil
 import tempfile
 import unittest
 from xml.dom import minidom
-from io import BytesIO
-
-try:
-    from lxml import etree
-    SCHEMA_CAPABLE = True
-except ImportError:
-    SCHEMA_CAPABLE = False
 
 from avocado import Test
 from avocado.core import job
 from avocado.core.result import Result
 from avocado.plugins import xunit
 
-from .. import setup_avocado_loggers
+from .. import setup_avocado_loggers, temp_dir_prefix
+
+try:
+    import xmlschema
+    SCHEMA_CAPABLE = True
+except ImportError:
+    SCHEMA_CAPABLE = False
+
+
 
 
 setup_avocado_loggers()
 
 
+UNIQUE_ID = '0000000000000000000000000000000000000000'
+LOGFILE = None
+
+
 class ParseXMLError(Exception):
     pass
-
-
-class FakeJob(object):
-
-    def __init__(self, args):
-        self.args = args
-        self.unique_id = '0000000000000000000000000000000000000000'
 
 
 class xUnitSucceedTest(unittest.TestCase):
@@ -44,23 +40,28 @@ class xUnitSucceedTest(unittest.TestCase):
                 pass
 
         self.tmpfile = tempfile.mkstemp()
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        args = argparse.Namespace(base_logdir=self.tmpdir)
-        args.xunit_output = self.tmpfile[1]
-        self.job = job.Job(args)
-        self.test_result = Result(FakeJob(args))
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
+        config = {'job.run.result.xunit.output': self.tmpfile[1],
+                  'run.results_dir': self.tmpdir.name,
+                  'run.keep_tmp': True}
+        self.job = job.Job(config)
+        self.job.setup()
+        self.test_result = Result(UNIQUE_ID, LOGFILE)
         self.test_result.tests_total = 1
         self.test_result.logfile = ("/.../avocado/job-results/"
                                     "job-2018-11-28T16.27-8fef221/job.log")
-        self.test1 = SimpleTest(job=self.job, base_logdir=self.tmpdir)
+        self.test1 = SimpleTest(job=self.job, base_logdir=self.tmpdir.name)
         self.test1._Test__status = 'PASS'
+        self.test1._Test__logfile = ''
         self.test1.time_elapsed = 678.23689
 
     def tearDown(self):
+        self.job.cleanup()
         errs = []
         cleanups = (lambda: os.close(self.tmpfile[0]),
                     lambda: os.remove(self.tmpfile[1]),
-                    lambda: shutil.rmtree(self.tmpdir))
+                    self.tmpdir.cleanup)
         for cleanup in cleanups:
             try:
                 cleanup()
@@ -70,14 +71,15 @@ class xUnitSucceedTest(unittest.TestCase):
                          % "\n".join(errs))
 
     @unittest.skipUnless(SCHEMA_CAPABLE,
-                         'Unable to validate schema due to missing lxml.etree library')
+                         'Unable to validate schema due to missing xmlschema library')
     def test_add_success(self):
         self.test_result.start_test(self.test1)
         self.test_result.end_test(self.test1.get_state())
         self.test_result.end_tests()
         xunit_result = xunit.XUnitResult()
         xunit_result.render(self.test_result, self.job)
-        with open(self.job.args.xunit_output, 'rb') as fp:
+        xunit_output = self.job.config.get('job.run.result.xunit.output')
+        with open(xunit_output, 'rb') as fp:
             xml = fp.read()
         try:
             dom = minidom.parseString(xml)
@@ -96,17 +98,13 @@ class xUnitSucceedTest(unittest.TestCase):
         junit_xsd = os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                  os.path.pardir, ".data",
                                                  'jenkins-junit.xsd'))
-        with open(junit_xsd, 'r') as f:
-            xmlschema = etree.XMLSchema(etree.parse(f))   # pylint: disable=I1101
-        # pylint: disable=I1101
-        self.assertTrue(xmlschema.validate(etree.parse(BytesIO(xml))),
-                        "Failed to validate against %s, content:\n%s\nerror log:\n%s" %
-                        (junit_xsd, xml, xmlschema.error_log))
+        xml_schema = xmlschema.XMLSchema(junit_xsd)
+        self.assertTrue(xml_schema.is_valid(xunit_output))
 
     def test_max_test_log_size(self):
         def get_system_out(out):
             return out[out.find(b"<system-out>"):out.find(b"<system-out/>")]
-        log = tempfile.NamedTemporaryFile(dir=self.tmpdir, delete=False)
+        log = tempfile.NamedTemporaryFile(dir=self.tmpdir.name, delete=False)
         log_content = b"1234567890" * 100
         log_content += b"this should not be present" + b"0987654321" * 100
         log.write(log_content)
@@ -118,16 +116,21 @@ class xUnitSucceedTest(unittest.TestCase):
         self.test_result.end_test(self.test1.get_state())
         self.test_result.end_tests()
         xunit_result = xunit.XUnitResult()
+        # setting the default value
+        self.job.config['job.run.result.xunit.max_test_log_chars'] = 100000
         xunit_result.render(self.test_result, self.job)
-        with open(self.job.args.xunit_output, 'rb') as fp:
+        xunit_output = self.job.config.get('job.run.result.xunit.output')
+        with open(xunit_output, 'rb') as fp:
             unlimited = fp.read()
-        self.job.args.xunit_max_test_log_chars = 10
+        # setting a small value
+        self.job.config['job.run.result.xunit.max_test_log_chars'] = 10
         xunit_result.render(self.test_result, self.job)
-        with open(self.job.args.xunit_output, 'rb') as fp:
+        with open(xunit_output, 'rb') as fp:
             limited = fp.read()
-        self.job.args.xunit_max_test_log_chars = 100000
+        # back to the default value
+        self.job.config['job.run.result.xunit.max_test_log_chars'] = 100000
         xunit_result.render(self.test_result, self.job)
-        with open(self.job.args.xunit_output, 'rb') as fp:
+        with open(xunit_output, 'rb') as fp:
             limited_but_fits = fp.read()
         self.assertLess(len(limited), len(unlimited) - 500,
                         "Length of xunit limitted to 10 chars was greater "

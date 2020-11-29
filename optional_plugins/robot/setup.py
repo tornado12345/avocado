@@ -13,20 +13,29 @@
 # Copyright: Red Hat Inc. 2017
 # Author: Amador Pahim <apahim@redhat.com>
 
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
+VERSION = open("VERSION", "r").read().strip()
 
 setup(name='avocado-framework-plugin-robot',
       description='Avocado Plugin for Execution of Robot Framework tests',
-      version=open("VERSION", "r").read().strip(),
+      version=VERSION,
       author='Avocado Developers',
       author_email='avocado-devel@redhat.com',
       url='http://avocado-framework.github.io/',
       packages=find_packages(),
       include_package_data=True,
-      install_requires=['robotframework'],
+      install_requires=['avocado-framework==%s' % VERSION,
+                        'robotframework<=3.1.2'],
+      test_suite='tests',
       entry_points={
+          'console_scripts': [
+              'avocado-runner-robot = avocado_robot.runner:main',
+          ],
           'avocado.plugins.cli': [
               'robot = avocado_robot:RobotCLI',
+          ],
+          'avocado.plugins.resolver': [
+              'robot = avocado_robot:RobotResolver'
           ]}
       )

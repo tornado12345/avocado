@@ -1,23 +1,14 @@
 import io
 import logging
 import os
-import shlex
-import unittest.mock
 import sys
 import time
+import unittest.mock
 
+from avocado.utils import path, process, script
 
-from .. import recent_mock
-from avocado.utils import astring
-from avocado.utils import script
-from avocado.utils import gdb
-from avocado.utils import process
-from avocado.utils import path
-
-from six import string_types, PY2
-
-from .. import setup_avocado_loggers
-
+from .. import (setup_avocado_loggers, skipOnLevelsInferiorThan,
+                skipUnlessPathExists)
 
 setup_avocado_loggers()
 
@@ -58,41 +49,49 @@ class TestSubProcess(unittest.TestCase):
     @unittest.mock.patch('avocado.utils.process.SubProcess.get_pid')
     @unittest.mock.patch('avocado.utils.process.get_children_pids')
     @unittest.mock.patch('avocado.utils.process.run')
-    def test_send_signal_sudo_enabled(self, run, get_children, pid, sudo, init):  # pylint: disable=W0613
+    def test_send_signal_sudo_enabled(self, run, get_children, get_pid, sudo, _):
         signal = 1
+        pid = 122
         child_pid = 123
         sudo.return_value = True
+        get_pid.return_value = pid
         get_children.return_value = [child_pid]
 
         subprocess = process.SubProcess(FICTIONAL_CMD)
         subprocess.send_signal(signal)
 
-        expected_cmd = 'kill -%d %d' % (signal, child_pid)
-        run.assert_called_with(expected_cmd, sudo=True)
+        kill_cmd = 'kill -%d %d'
+        calls = [unittest.mock.call(kill_cmd % (signal, child_pid), sudo=True),
+                 unittest.mock.call(kill_cmd % (signal, pid), sudo=True)]
+        run.assert_has_calls(calls)
 
     @unittest.mock.patch('avocado.utils.process.SubProcess._init_subprocess')
     @unittest.mock.patch('avocado.utils.process.SubProcess.is_sudo_enabled')
     @unittest.mock.patch('avocado.utils.process.SubProcess.get_pid')
     @unittest.mock.patch('avocado.utils.process.get_children_pids')
     @unittest.mock.patch('avocado.utils.process.run')
-    def test_send_signal_sudo_enabled_with_exception(
-            self, run, get_children, pid, sudo, init):  # pylint: disable=W0613
+    def test_send_signal_sudo_enabled_with_exception(self, run, get_children,
+                                                     get_pid, sudo, _):
         signal = 1
+        pid = 122
         child_pid = 123
         sudo.return_value = True
+        get_pid.return_value = pid
         get_children.return_value = [child_pid]
         run.side_effect = Exception()
 
         subprocess = process.SubProcess(FICTIONAL_CMD)
         subprocess.send_signal(signal)
 
-        expected_cmd = 'kill -%d %d' % (signal, child_pid)
-        run.assert_called_with(expected_cmd, sudo=True)
+        kill_cmd = 'kill -%d %d'
+        calls = [unittest.mock.call(kill_cmd % (signal, child_pid), sudo=True),
+                 unittest.mock.call(kill_cmd % (signal, pid), sudo=True)]
+        run.assert_has_calls(calls)
 
     @unittest.mock.patch('avocado.utils.process.SubProcess._init_subprocess')
     @unittest.mock.patch('avocado.utils.process.SubProcess.get_pid')
     @unittest.mock.patch('avocado.utils.process.get_owner_id')
-    def test_get_user_id(self, get_owner, get_pid, init):  # pylint: disable=W0613
+    def test_get_user_id(self, get_owner, get_pid, _):
         user_id = 1
         process_id = 123
         get_pid.return_value = process_id
@@ -106,7 +105,7 @@ class TestSubProcess(unittest.TestCase):
     @unittest.mock.patch('avocado.utils.process.SubProcess._init_subprocess')
     @unittest.mock.patch('avocado.utils.process.SubProcess.get_pid')
     @unittest.mock.patch('avocado.utils.process.get_owner_id')
-    def test_is_sudo_enabled_false(self, get_owner, get_pid, init):  # pylint: disable=W0613
+    def test_is_sudo_enabled_false(self, get_owner, get_pid, _):
         user_id = 1
         process_id = 123
         get_pid.return_value = process_id
@@ -120,7 +119,7 @@ class TestSubProcess(unittest.TestCase):
     @unittest.mock.patch('avocado.utils.process.SubProcess._init_subprocess')
     @unittest.mock.patch('avocado.utils.process.SubProcess.get_pid')
     @unittest.mock.patch('avocado.utils.process.get_owner_id')
-    def test_is_sudo_enabled_true(self, get_owner, get_pid, init):  # pylint: disable=W0613
+    def test_is_sudo_enabled_true(self, get_owner, get_pid, _):
         user_id = 0
         process_id = 123
         get_pid.return_value = process_id
@@ -132,65 +131,7 @@ class TestSubProcess(unittest.TestCase):
         get_owner.assert_called_with(process_id)
 
 
-class TestGDBProcess(unittest.TestCase):
-
-    def setUp(self):
-        self.current_runtime_expr = gdb.GDB_RUN_BINARY_NAMES_EXPR[:]
-
-    def cleanUp(self):
-        gdb.GDB_RUN_BINARY_NAMES_EXPR = self.current_runtime_expr
-
-    def test_should_run_inside_gdb(self):
-        gdb.GDB_RUN_BINARY_NAMES_EXPR = ['foo']
-        self.assertTrue(process.should_run_inside_gdb('foo'))
-        self.assertTrue(process.should_run_inside_gdb('/usr/bin/foo'))
-        self.assertFalse(process.should_run_inside_gdb('/usr/bin/fooz'))
-
-        gdb.GDB_RUN_BINARY_NAMES_EXPR.append('foo:main')
-        self.assertTrue(process.should_run_inside_gdb('foo'))
-        self.assertFalse(process.should_run_inside_gdb('bar'))
-
-        gdb.GDB_RUN_BINARY_NAMES_EXPR.append('bar:main.c:5')
-        self.assertTrue(process.should_run_inside_gdb('bar'))
-        self.assertFalse(process.should_run_inside_gdb('baz'))
-        self.assertTrue(process.should_run_inside_gdb('bar 1 2 3'))
-        self.assertTrue(process.should_run_inside_gdb('/usr/bin/bar 1 2 3'))
-
-    def test_should_run_inside_gdb_malformed_command(self):
-        gdb.GDB_RUN_BINARY_NAMES_EXPR = ['/bin/virsh']
-        cmd = """/bin/virsh node-memory-tune --shm-sleep-millisecs ~!@#$%^*()-=[]{}|_+":;'`,>?. """
-        self.assertTrue(process.should_run_inside_gdb(cmd))
-        self.assertFalse(process.should_run_inside_gdb("foo bar baz"))
-        self.assertFalse(process.should_run_inside_gdb("foo ' "))
-
-    def test_get_sub_process_klass(self):
-        gdb.GDB_RUN_BINARY_NAMES_EXPR = []
-        self.assertIs(process.get_sub_process_klass(FICTIONAL_CMD),
-                      process.SubProcess)
-
-        gdb.GDB_RUN_BINARY_NAMES_EXPR.append('/bin/false')
-        self.assertIs(process.get_sub_process_klass('/bin/false'),
-                      process.GDBSubProcess)
-        self.assertIs(process.get_sub_process_klass('false'),
-                      process.GDBSubProcess)
-        self.assertIs(process.get_sub_process_klass(FICTIONAL_CMD),
-                      process.SubProcess)
-
-    def test_split_gdb_expr(self):
-        binary, break_point = process.split_gdb_expr('foo:debug_print')
-        self.assertEqual(binary, 'foo')
-        self.assertEqual(break_point, 'debug_print')
-        binary, break_point = process.split_gdb_expr('bar')
-        self.assertEqual(binary, 'bar')
-        self.assertEqual(break_point, 'main')
-        binary, break_point = process.split_gdb_expr('baz:main.c:57')
-        self.assertEqual(binary, 'baz')
-        self.assertEqual(break_point, 'main.c:57')
-        self.assertIsInstance(process.split_gdb_expr('foo'), tuple)
-        self.assertIsInstance(process.split_gdb_expr('foo:debug_print'), tuple)
-
-
-def mock_fail_find_cmd(cmd, default=None):  # pylint: disable=W0613
+def mock_fail_find_cmd(cmd, default=None, check_exec=True):  # pylint: disable=W0613
     path_paths = ["/usr/libexec", "/usr/local/sbin", "/usr/local/bin",
                   "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
     raise path.CmdNotFoundError(cmd, path_paths)
@@ -219,7 +160,7 @@ class TestProcessRun(unittest.TestCase):
     def test_subprocess_sudo(self):
         expected_command = '/bin/sudo -n ls -l'
         p = process.SubProcess(cmd='ls -l', sudo=True)
-        path.find_command.assert_called_once_with('sudo')
+        path.find_command.assert_called_once_with('sudo', check_exec=False)
         self.assertEqual(p.cmd, expected_command)
 
     @unittest.mock.patch.object(path, 'find_command', mock_fail_find_cmd)
@@ -244,7 +185,7 @@ class TestProcessRun(unittest.TestCase):
     def test_subprocess_sudo_shell(self):
         expected_command = '/bin/sudo -n -s ls -l'
         p = process.SubProcess(cmd='ls -l', sudo=True, shell=True)
-        path.find_command.assert_called_once_with('sudo')
+        path.find_command.assert_called_once_with('sudo', check_exec=False)
         self.assertEqual(p.cmd, expected_command)
 
     @unittest.mock.patch.object(path, 'find_command', mock_fail_find_cmd)
@@ -276,8 +217,7 @@ class TestProcessRun(unittest.TestCase):
         p = process.run(cmd='ls -l', ignore_status=True)
         self.assertEqual(p.command, expected_command)
 
-    @unittest.skipUnless(os.path.exists('/bin/sudo'),
-                         "/bin/sudo not available")
+    @skipUnlessPathExists('/bin/sudo')
     @unittest.mock.patch.object(path, 'find_command',
                                 unittest.mock.Mock(return_value='/bin/sudo'))
     @unittest.mock.patch.object(os, 'getuid',
@@ -285,7 +225,7 @@ class TestProcessRun(unittest.TestCase):
     def test_run_sudo(self):
         expected_command = '/bin/sudo -n ls -l'
         p = process.run(cmd='ls -l', sudo=True, ignore_status=True)
-        path.find_command.assert_called_once_with('sudo')
+        path.find_command.assert_called_once_with('sudo', check_exec=False)
         self.assertEqual(p.command, expected_command)
 
     @unittest.mock.patch.object(path, 'find_command', mock_fail_find_cmd)
@@ -310,7 +250,7 @@ class TestProcessRun(unittest.TestCase):
     def test_run_sudo_shell(self):
         expected_command = '/bin/sudo -n -s ls -l'
         p = process.run(cmd='ls -l', sudo=True, shell=True, ignore_status=True)
-        path.find_command.assert_called_once_with('sudo')
+        path.find_command.assert_called_once_with('sudo', check_exec=False)
         self.assertEqual(p.command, expected_command)
 
     @unittest.mock.patch.object(path, 'find_command', mock_fail_find_cmd)
@@ -346,10 +286,11 @@ class TestProcessRun(unittest.TestCase):
         self.assertEqual(result.stdout, encoded_text)
         self.assertEqual(result.stdout_text, text)
 
-    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 1)) < 2,
-                     "Skipping test that take a long time to run, are "
-                     "resource intensive or time sensitve")
+    @skipOnLevelsInferiorThan(2)
     def test_run_with_timeout_ugly_cmd(self):
+        """
+        :avocado: tags=parallel:1
+        """
         with script.TemporaryScript("refuse_to_die", REFUSE_TO_DIE) as exe:
             cmd = "%s '%s'" % (sys.executable, exe.path)
             # Wait 1s to set the traps
@@ -361,10 +302,11 @@ class TestProcessRun(unittest.TestCase):
                                 "reporting failure but should be killed.\n%s"
                                 % res)
 
-    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < 2,
-                     "Skipping test that take a long time to run, are "
-                     "resource intensive or time sensitve")
+    @skipOnLevelsInferiorThan(2)
     def test_run_with_negative_timeout_ugly_cmd(self):
+        """
+        :avocado: tags=parallel:1
+        """
         with script.TemporaryScript("refuse_to_die", REFUSE_TO_DIE) as exe:
             cmd = "%s '%s'" % (sys.executable, exe.path)
             # Wait 1s to set the traps
@@ -397,36 +339,14 @@ class MiscProcessTests(unittest.TestCase):
         self.assertEqual("./bin", res)
 
     def test_cmd_split(self):
-        plain_str = ''
-        unicode_str = u''
-        empty_bytes = b''
-        # shlex.split() can work with "plain_str" and "unicode_str" on both
-        # Python 2 and Python 3.  While we're not testing Python itself,
-        # this will help us catch possible differences in the Python
-        # standard library should they arise.
-        self.assertEqual(shlex.split(plain_str), [])
-        self.assertEqual(shlex.split(astring.to_text(plain_str)), [])
-        self.assertEqual(shlex.split(unicode_str), [])
-        self.assertEqual(shlex.split(astring.to_text(unicode_str)), [])
-        # on Python 3, shlex.split() won't work with bytes, raising:
-        # AttributeError: 'bytes' object has no attribute 'read'.
-        # To turn bytes into text (when necessary), that is, on
-        # Python 3 only, use astring.to_text()
-        self.assertEqual(shlex.split(astring.to_text(empty_bytes)), [])
-        # Now let's test our specific implementation to split commands
-        self.assertEqual(process.cmd_split(plain_str), [])
-        self.assertEqual(process.cmd_split(unicode_str), [])
-        self.assertEqual(process.cmd_split(empty_bytes), [])
-        unicode_command = u"avok\xe1do_test_runner arguments"
-        self.assertEqual(process.cmd_split(unicode_command),
-                         [u"avok\xe1do_test_runner",
-                          u"arguments"])
+        self.assertEqual(process.cmd_split(''), [])
+        self.assertEqual(process.cmd_split("avok\xe1do_test_runner arguments"),
+                         ["avok\xe1do_test_runner",
+                          "arguments"])
 
-    @unittest.skipUnless(recent_mock(),
-                         "mock library version cannot (easily) patch open()")
     def test_get_parent_pid(self):
         stat = b'18405 (bash) S 24139 18405 18405 34818 8056 4210688 9792 170102 0 7 11 4 257 84 20 0 1 0 44336493 235409408 4281 18446744073709551615 94723230367744 94723231442728 140723100226000 0 0 0 65536 3670020 1266777851 0 0 0 17 1 0 0 0 0 0 94723233541456 94723233588580 94723248717824 140723100229613 140723100229623 140723100229623 140723100233710 0'
-        with unittest.mock.patch('avocado.utils.process.open',
+        with unittest.mock.patch('builtins.open',
                                  return_value=io.BytesIO(stat)):
             self.assertTrue(process.get_parent_pid(0), 24139)
 
@@ -484,7 +404,7 @@ class MiscProcessTests(unittest.TestCase):
         signal = 1
         owner_mocked.return_value = owner_id
         expected_cmd = 'kill -%d %d' % (signal, process_id)
-        run_mocked.side_effect = Exception()
+        run_mocked.side_effect = process.CmdError()
 
         killed = process.safe_kill(process_id, signal)
         self.assertFalse(killed)
@@ -590,15 +510,11 @@ class CmdResultTests(unittest.TestCase):
         result = process.CmdResult("ls", b"unicode_follows: \xc5\xa1",
                                    b"cp1250 follows: \xfd", 1, 2, 3,
                                    "wrong_encoding")
-        if PY2:
-            prefix = ''
-        else:
-            prefix = 'b'
         self.assertEqual(str(result), "command: 'ls'\nexit_status: 1"
                          "\nduration: 2\ninterrupted: False\npid: "
                          "3\nencoding: 'wrong_encoding'\nstdout: "
-                         "%s'unicode_follows: \\xc5\\xa1'\nstderr: "
-                         "%s'cp1250 follows: \\xfd'" % (prefix, prefix))
+                         "b'unicode_follows: \\xc5\\xa1'\nstderr: "
+                         "b'cp1250 follows: \\xfd'")
 
     def test_cmd_result_stdout_stderr_bytes(self):
         result = process.CmdResult()
@@ -607,8 +523,8 @@ class CmdResultTests(unittest.TestCase):
 
     def test_cmd_result_stdout_stderr_text(self):
         result = process.CmdResult()
-        self.assertTrue(isinstance(result.stdout_text, string_types))
-        self.assertTrue(isinstance(result.stderr_text, string_types))
+        self.assertTrue(isinstance(result.stdout_text, str))
+        self.assertTrue(isinstance(result.stderr_text, str))
 
     def test_cmd_result_stdout_stderr_already_text(self):
         result = process.CmdResult()
@@ -632,14 +548,10 @@ class CmdErrorTests(unittest.TestCase):
                                    b"cp1250 follows: \xfd", 1, 2, 3,
                                    "wrong_encoding")
         err = process.CmdError("ls", result, "please don't crash")
-        if PY2:
-            prefix = ''
-        else:
-            prefix = 'b'
         self.assertEqual(str(err), "Command 'ls' failed.\nstdout: "
-                         "%s'unicode_follows: \\xc5\\xa1'\nstderr: "
-                         "%s'cp1250 follows: \\xfd'\nadditional_info: "
-                         "please don't crash" % (prefix, prefix))
+                         "b'unicode_follows: \\xc5\\xa1'\nstderr: "
+                         "b'cp1250 follows: \\xfd'\nadditional_info: "
+                         "please don't crash")
 
 
 class FDDrainerTests(unittest.TestCase):
@@ -738,6 +650,24 @@ class FDDrainerTests(unittest.TestCase):
         self.assertFalse(fd_drainer._thread.is_alive())
         # \n added by StreamLogger
         self.assertEqual(data.getvalue(), u"Avok\ufffd\ufffddo\n")
+
+
+class GetCommandOutputPattern(unittest.TestCase):
+
+    @unittest.skipUnless(ECHO_CMD, "Echo command not available in system")
+    def test_matches(self):
+        res = process.get_command_output_matching("echo foo", "foo")
+        self.assertEqual(res, ["foo"])
+
+    @unittest.skipUnless(ECHO_CMD, "Echo command not available in system")
+    def test_matches_multiple(self):
+        res = process.get_command_output_matching("echo -e 'foo\nfoo\n'", "foo")
+        self.assertEqual(res, ["foo", "foo"])
+
+    @unittest.skipUnless(ECHO_CMD, "Echo command not available in system")
+    def test_does_not_match(self):
+        res = process.get_command_output_matching("echo foo", "bar")
+        self.assertEqual(res, [])
 
 
 if __name__ == "__main__":

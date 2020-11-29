@@ -23,11 +23,9 @@ import os
 import re
 import shutil
 import time
-
-from six.moves import xrange as range
+import warnings
 
 from . import process
-
 
 LOGGER = logging.getLogger('avocado.test')
 
@@ -47,6 +45,8 @@ def get_diskspace(disk):
     :rtype: str
     :raises: :py:class:`LVException` on failure to find disk space
     """
+    warnings.warn("deprecated, use get_device_total_space instead",
+                  DeprecationWarning)
     result = process.run('fdisk -l %s' % disk,
                          env={"LANG": "C"}, sudo=True).stdout_text
     results = result.splitlines()
@@ -54,6 +54,39 @@ def get_diskspace(disk):
         if line.startswith('Disk ' + disk):
             return re.findall(r", (.*?) bytes", line)[0]
     raise LVException('Error in finding disk space')
+
+
+def get_device_total_space(disk):
+    """Get the total device size.
+
+    :param str device: name of the device/disk to find the total size
+    :returns: size in bytes
+    :rtype: int
+    :raises: :py:class:`LVException` on failure to find disk space
+    """
+    result = process.run('fdisk -l %s' % disk,
+                         env={"LANG": "C"}, sudo=True).stdout_text
+    results = result.splitlines()
+    for line in results:
+        if line.startswith('Disk ' + disk):
+            return int(re.findall(r", (.*?) bytes", line)[0])
+    raise LVException('Error in finding disk space')
+
+
+def get_devices_total_space(devices):
+    """Get the total size of given device(s)/disk(s).
+
+    :param list devices: list with the names of devices separated with space.
+    :returns: sizes in bytes
+    :rtype: int
+    :raises: :py:class:`LVException` on failure to find disk space
+    """
+    size = 0
+    for device in devices:
+        size = size + get_device_total_space(device)
+    if not size:
+        raise LVException('failed to get disks size')
+    return size
 
 
 def vg_ramdisk(disk, vg_name, ramdisk_vg_size,
@@ -87,6 +120,8 @@ def vg_ramdisk(disk, vg_name, ramdisk_vg_size,
     - lv_snapshot_size='1G'
     The ramdisk volume group size is in MB.
     """
+    warnings.warn("deprecated, use existing methods: vg_create, lv_create",
+                  DeprecationWarning)
     vg_size = ramdisk_vg_size
     vg_ramdisk_dir = os.path.join(ramdisk_basedir, vg_name)
     ramdisk_filename = os.path.join(vg_ramdisk_dir,
@@ -161,6 +196,8 @@ def vg_ramdisk_cleanup(ramdisk_filename=None, vg_ramdisk_dir=None,
     :rtype: (str, str, str, str)
     :raises: :py:class:`LVException` on intolerable failure at any stage
     """
+    warnings.warn("deprecated, use existing methods: vg_remove, lv_remove",
+                  DeprecationWarning)
     errs = []
     if vg_name is not None:
         loop_device = re.search(r"([/\w-]+) +%s +lvm2" % vg_name,
@@ -290,15 +327,14 @@ def vg_create(vg_name, pv_list, force=False):
     """
     if vg_check(vg_name):
         raise LVException("Volume group '%s' already exist" % vg_name)
-    if force:
-        cmd = "vgcreate -f"
-    else:
-        cmd = "vgcreate"
+    cmd = "vgcreate"
     if isinstance(pv_list, list):
         pv_list = " ".join(pv_list)
     else:
         pv_list = str(pv_list)
     cmd += " %s %s" % (vg_name, pv_list)
+    if force:
+        cmd += "%s -f -y" % cmd
     process.run(cmd, sudo=True)
 
 
@@ -423,27 +459,6 @@ def lv_create(vg_name, lv_name, lv_size, force_flag=True,
         LOGGER.error(detail)
         raise LVException("Create thin volume failed.")
     LOGGER.debug("Created thin volume:%s", lv_name)
-
-
-def thin_lv_create(vg_name, thinpool_name="lvthinpool", thinpool_size="1.5G",
-                   thinlv_name="lvthin", thinlv_size="1G"):
-    """
-    Create a thin volume from given volume group.
-
-    Note: this is a deprecated API and will be removed soon.
-
-    :param vg_name: An exist volume group
-    :param thinpool_name: The name of thin pool
-    :param thinpool_size: The size of thin pool to be created
-    :param thinlv_name: The name of thin volume
-    :param thinlv_size: The size of thin volume
-    """
-    LOGGER.warn("thin_lv_create() is a deprecated API and will be removed "
-                "soon.  Please resort to using lv_create() which is now "
-                "capable of creathing thin logical volumes")
-    lv_create(vg_name=vg_name, lv_name=thinlv_name, lv_size=thinlv_size,
-              pool_name=thinpool_name, pool_size=thinpool_size)
-    return (thinpool_name, thinlv_name)
 
 
 def lv_remove(vg_name, lv_name):
@@ -618,6 +633,34 @@ def lv_mount(vg_name, lv_name, mount_loc, create_filesystem=""):
                     (vg_name, lv_name, mount_loc), sudo=True)
     except process.CmdError as ex:
         raise LVException("Fail to mount logical volume: %s" % ex)
+
+
+def vg_reactivate(vg_name, timeout=10, export=False):
+    """
+    In case of unclean shutdowns some of the vgs is still active and merging
+    is postponed. Use this function to attempt to deactivate and reactivate
+    all of them to cause the merge to happen.
+
+    :param str vg_name: name of the volume group
+    :param int timeout: timeout between operations
+    :raises: :py:class:`LVException` if the logical volume is still active
+    """
+    try:
+        process.run("vgchange -an %s" % vg_name, sudo=True)
+        time.sleep(timeout)
+
+        if export:
+            process.run("vgexport %s" % vg_name, sudo=True)
+            time.sleep(timeout)
+            process.run("vgimport %s" % vg_name, sudo=True)
+            time.sleep(timeout)
+
+        process.run("vgchange -ay %s" % vg_name, sudo=True)
+        time.sleep(timeout)
+    except process.CmdError:
+        log_msg = "Failed to reactivate %s - please, nuke the process that uses it first."
+        LOGGER.error(log_msg, vg_name)
+        raise LVException("The Volume group %s is still active" % vg_name)
 
 
 def lv_umount(vg_name, lv_name):

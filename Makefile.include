@@ -15,7 +15,7 @@ srpm: source
 
 rpm: srpm
 	if test ! -d BUILD/RPM; then mkdir -p BUILD/RPM; fi
-	mock -r $(MOCK_CONFIG) --resultdir BUILD/RPM -D "rel_build 0" -D "commit $(COMMIT)" -D "commit_date $(COMMIT_DATE)" --rebuild BUILD/SRPM/$(RPM_BASE_NAME)-$(VERSION)-*.src.rpm
+	mock -r $(MOCK_CONFIG) --no-clean --resultdir BUILD/RPM -D "rel_build 0" -D "commit $(COMMIT)" -D "commit_date $(COMMIT_DATE)" --rebuild BUILD/SRPM/$(RPM_BASE_NAME)-$(VERSION)-*.src.rpm
 
 srpm-release: source-release
 	if test ! -d BUILD/SRPM; then mkdir -p BUILD/SRPM; fi
@@ -23,7 +23,7 @@ srpm-release: source-release
 
 rpm-release: srpm-release
 	if test ! -d BUILD/RPM; then mkdir -p BUILD/RPM; fi
-	mock -r $(MOCK_CONFIG) --resultdir BUILD/RPM -D "rel_build 1" --rebuild BUILD/SRPM/$(RPM_BASE_NAME)-$(VERSION)-*.src.rpm
+	mock -r $(MOCK_CONFIG) --no-clean --resultdir BUILD/RPM -D "rel_build 1" --rebuild BUILD/SRPM/$(RPM_BASE_NAME)-$(VERSION)-*.src.rpm
 
 pip:
 	$(PYTHON) -m pip --version || $(PYTHON) -m ensurepip $(PYTHON_DEVELOP_ARGS) || $(PYTHON) -c "import os; import sys; import urllib; f = urllib.urlretrieve('https://bootstrap.pypa.io/get-pip.py')[0]; os.system('%s %s' % (sys.executable, f))"

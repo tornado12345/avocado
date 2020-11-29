@@ -15,16 +15,25 @@
 import json
 import sys
 
-from six import iteritems
-
-from avocado.core import exit_codes
-from avocado.core import varianter
+from avocado.core import exit_codes, varianter
 from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import CLI
-from avocado.core.plugin_interfaces import Varianter
-
+from avocado.core.plugin_interfaces import CLI, Init, Varianter
+from avocado.core.settings import settings
 
 _NO_VARIANTS = -1
+
+
+class JsonVariantsInit(Init):
+
+    name = 'json_variants'
+    description = "JSON serialized based varianter initialization"
+
+    def initialize(self):
+        help_msg = 'Load the Variants from a JSON serialized file'
+        settings.register_option(section='json.variants',
+                                 key='load',
+                                 default=None,
+                                 help_msg=help_msg)
 
 
 class JsonVariantsCLI(CLI):
@@ -38,18 +47,19 @@ class JsonVariantsCLI(CLI):
                   "subcommand"
 
     def configure(self, parser):
-
         for name in ("run", "variants"):  # intentionally omitting "multiplex"
             subparser = parser.subcommands.choices.get(name, None)
             if subparser is None:
                 continue
             sparser = subparser.add_argument_group('JSON serialized based '
                                                    'varianter options')
-            sparser.add_argument('--json-variants-load', default=None,
-                                 help=('Load the Variants from a JSON '
-                                       'serialized file'))
+            settings.add_argparser_to_option(
+                namespace='json.variants.load',
+                parser=sparser,
+                long_arg='--json-variants-load',
+                allow_multiple=True)
 
-    def run(self, args):
+    def run(self, config):
         pass
 
 
@@ -63,8 +73,8 @@ class JsonVariants(Varianter):
     description = "JSON serialized based Varianter"
     variants = None
 
-    def initialize(self, args):
-        load_variants = getattr(args, "json_variants_load", None)
+    def initialize(self, config):
+        load_variants = config.get('json.variants.load')
 
         if load_variants is None:
             self.variants = _NO_VARIANTS
@@ -75,7 +85,7 @@ class JsonVariants(Varianter):
         except IOError:
             LOG_UI.error("JSON serialized file '%s' could not be found or "
                          "is not readable", load_variants)
-            if args.subcommand == 'run':
+            if config.get('subcommand') == 'run':
                 sys.exit(exit_codes.AVOCADO_JOB_FAIL)
             else:
                 sys.exit(exit_codes.AVOCADO_FAIL)
@@ -98,9 +108,6 @@ class JsonVariants(Varianter):
                                "initialization is not supported")
 
         return len(self.variants)
-
-    def update_defaults(self, defaults):
-        pass
 
     def to_str(self, summary, variants, **kwargs):
         """
@@ -135,7 +142,7 @@ class JsonVariants(Varianter):
                     continue
                 env = set()
                 for node in variant["variant"]:
-                    for key, value in iteritems(node.environment):
+                    for key, value in node.environment.items():
                         origin = node.environment.origin[key].path
                         env.add(("%s:%s" % (origin, key), str(value)))
                 if not env:

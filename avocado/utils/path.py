@@ -34,7 +34,7 @@ class CmdNotFoundError(Exception):
     :param paths: List of paths where we looked after.
     """
 
-    def __init__(self, cmd, paths):
+    def __init__(self, cmd, paths):  # pylint: disable=W0231
         super(CmdNotFoundError, self)
         self.cmd = cmd
         self.paths = paths
@@ -74,13 +74,16 @@ def init_dir(*args):
     return directory
 
 
-def find_command(cmd, default=None):
+def find_command(cmd, default=None, check_exec=True):
     """
     Try to find a command in the PATH, paranoid version.
 
     :param cmd: Command to be found.
     :param default: Command path to use as a fallback if not found
                     in the standard directories.
+    :param check_exec: if a check for permissions that render the command
+                       executable by the current user should be performed.
+    :type check_exec: bool
     :raise: :class:`avocado.utils.path.CmdNotFoundError` in case the
             command was not found and no default was given.
     """
@@ -95,15 +98,19 @@ def find_command(cmd, default=None):
     for dir_path in path_paths:
         cmd_path = os.path.join(dir_path, cmd)
         if os.path.isfile(cmd_path):
+            if check_exec:
+                if not os.access(cmd_path, os.R_OK | os.X_OK):
+                    continue
             return os.path.abspath(cmd_path)
 
     if default is not None:
         return default
     else:
+        path_paths.sort()
         raise CmdNotFoundError(cmd, path_paths)
 
 
-class PathInspector(object):
+class PathInspector:
 
     def __init__(self, path):
         self.path = path
@@ -166,27 +173,23 @@ def usable_rw_dir(directory, create=True):
     return False
 
 
-def usable_ro_dir(directory, create=True):
+def usable_ro_dir(directory):
     """
     Verify whether dir exists and we can access its contents.
 
-    If a usable RO is there, use it no questions asked. If not, let's at
-    least try to create one.
+    Check if a usable RO directory is there.
 
     :param directory: Directory
-    :param create: whether to create the directory
     """
-    cwd = os.getcwd()
+    try:
+        cwd = os.getcwd()
+    except FileNotFoundError:
+        return False
+
     if os.path.isdir(directory):
         try:
             os.chdir(directory)
             os.chdir(cwd)
-            return True
-        except OSError:
-            pass
-    elif create:
-        try:
-            init_dir(directory)
             return True
         except OSError:
             pass

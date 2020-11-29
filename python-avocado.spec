@@ -10,12 +10,12 @@
     %global gittar          %{srcname}-%{version}.tar.gz
 %else
     %if ! 0%{?commit:1}
-        %global commit     c4320e3f4066205a2efd1c90fdf5109592344013
+        %global commit      ff35265f889bbfca9257713ff25de0e08d776593
     %endif
     %if ! 0%{?commit_date:1}
-        %global commit_date 20181217
+        %global commit_date 20200911
     %endif
-    %global shortcommit     %(c=%{commit};echo ${c:0:8})
+    %global shortcommit     %(c=%{commit};echo ${c:0:9})
     %global gitrel          .%{commit_date}git%{shortcommit}
     %global gittar          %{srcname}-%{shortcommit}.tar.gz
 %endif
@@ -26,13 +26,6 @@
 # enabled by default.
 %global with_tests 1
 
-# Python 3 version of Fabric package is new starting with Fedora 29
-%if 0%{?fedora} >= 29
-%global with_python3_fabric 1
-%else
-%global with_python3_fabric 0
-%endif
-
 # The Python dependencies are already tracked by the python2
 # or python3 "Requires".  This filters out the python binaries
 # from the RPM automatic requires/provides scanner.
@@ -40,8 +33,8 @@
 
 Summary: Framework with tools and libraries for Automated Testing
 Name: python-%{srcname}
-Version: 69.0
-Release: 0%{?gitrel}%{?dist}
+Version: 83.0
+Release: 1%{?gitrel}%{?dist}
 License: GPLv2
 Group: Development/Tools
 URL: http://avocado-framework.github.io/
@@ -53,35 +46,30 @@ Source0: https://github.com/avocado-framework/%{srcname}/archive/%{commit}.tar.g
 BuildArch: noarch
 BuildRequires: procps-ng
 BuildRequires: kmod
-%if %{with_python3_fabric}
-BuildRequires: python3-fabric3
-%endif
 %if 0%{?fedora} >= 30
 BuildRequires: glibc-all-langpacks
 %endif
-
 BuildRequires: python3-jinja2
-BuildRequires: python3-aexpect
 BuildRequires: python3-devel
 BuildRequires: python3-docutils
 BuildRequires: python3-lxml
 BuildRequires: python3-psutil
-BuildRequires: python3-requests
-BuildRequires: python3-resultsdb_api
 BuildRequires: python3-setuptools
-BuildRequires: python3-sphinx
-BuildRequires: python3-stevedore
+
+%if ! 0%{?rhel}
+BuildRequires: python3-resultsdb_api
 BuildRequires: python3-pycdlib
+%endif
 
 %if %{with_tests}
 BuildRequires: genisoimage
 BuildRequires: libcdio
-BuildRequires: libvirt-python
-BuildRequires: perl-Test-Harness
 BuildRequires: psmisc
-BuildRequires: python3-libvirt
 BuildRequires: python3-yaml
 BuildRequires: python3-netifaces
+%if ! 0%{?rhel}
+BuildRequires: perl-Test-Harness
+%endif
 %endif
 
 %description
@@ -94,12 +82,11 @@ Requires: python3-%{srcname}-common == %{version}
 Requires: gdb
 Requires: gdb-gdbserver
 Requires: procps-ng
-Requires: pyliblzma
 Requires: python3
-Requires: python3-requests
 Requires: python3-setuptools
-Requires: python3-stevedore
+%if ! 0%{?rhel}
 Requires: python3-pycdlib
+%endif
 
 %description -n python3-%{srcname}
 Avocado is a set of tools and libraries (what people call
@@ -111,41 +98,23 @@ these days a framework) to perform automated testing.
 %else
 %setup -q -n %{srcname}-%{commit}
 %endif
-# package plugins-runner-vm requires libvirt-python, but the RPM
-# version of libvirt-python does not publish the egg info and this
-# causes that dep to be attempted to be installed by pip
-sed -e "s/'libvirt-python'//" -i optional_plugins/runner_vm/setup.py
 
 %build
-%if 0%{?fedora} && 0%{?fedora} < 29
+%if (0%{?fedora} && 0%{?fedora} < 29) || 0%{?rhel}
 sed -e "s/'PyYAML>=4.2b2'/'PyYAML>=3.12'/" -i optional_plugins/varianter_yaml_to_mux/setup.py
+%endif
+%if 0%{?rhel}
 %endif
 %py3_build
 pushd optional_plugins/html
 %py3_build
 popd
-pushd optional_plugins/runner_remote
-%if %{with_python3_fabric}
-%py3_build
-%endif
-popd
-pushd optional_plugins/runner_vm
-%if %{with_python3_fabric}
-%py3_build
-%endif
-popd
-pushd optional_plugins/runner_docker
-%if %{with_python3_fabric}
-%py3_build
-%endif
-popd
+%if ! 0%{?rhel}
 pushd optional_plugins/resultsdb
 %py3_build
 popd
+%endif
 pushd optional_plugins/varianter_yaml_to_mux
-%py3_build
-popd
-pushd optional_plugins/loader_yaml
 %py3_build
 popd
 pushd optional_plugins/golang
@@ -160,13 +129,9 @@ popd
 pushd optional_plugins/result_upload
 %py3_build
 popd
-pushd optional_plugins/glib
-%py3_build
-popd
 # python3-docutils on Fedora 28 uses a rst2man binary with -3 prefix
 %if 0%{?fedora} == 28
 /usr/bin/rst2man-3 man/avocado.rst man/avocado.1
-/usr/bin/rst2man-3 man/avocado-rest-client.rst man/avocado-rest-client.1
 %else
 %{__make} man
 %endif
@@ -177,28 +142,12 @@ popd
 pushd optional_plugins/html
 %py3_install
 popd
-pushd optional_plugins/runner_remote
-%if %{with_python3_fabric}
-%py3_install
-%endif
-popd
-pushd optional_plugins/runner_vm
-%if %{with_python3_fabric}
-%py3_install
-%endif
-popd
-pushd optional_plugins/runner_docker
-%if %{with_python3_fabric}
-%py3_install
-%endif
-popd
+%if ! 0%{?rhel}
 pushd optional_plugins/resultsdb
 %py3_install
 popd
+%endif
 pushd optional_plugins/varianter_yaml_to_mux
-%py3_install
-popd
-pushd optional_plugins/loader_yaml
 %py3_install
 popd
 pushd optional_plugins/golang
@@ -213,12 +162,8 @@ popd
 pushd optional_plugins/result_upload
 %py3_install
 popd
-pushd optional_plugins/glib
-%py3_install
-popd
 %{__mkdir} -p %{buildroot}%{_mandir}/man1
 %{__install} -m 0644 man/avocado.1 %{buildroot}%{_mandir}/man1/avocado.1
-%{__install} -m 0644 man/avocado-rest-client.1 %{buildroot}%{_mandir}/man1/avocado-rest-client.1
 %{__install} -d -m 0755 %{buildroot}%{_sharedstatedir}/avocado/data
 %{__install} -d -m 0755 %{buildroot}%{_docdir}/avocado
 %{__cp} -r examples/gdb-prerun-scripts %{buildroot}%{_docdir}/avocado
@@ -226,7 +171,6 @@ popd
 %{__cp} -r examples/tests %{buildroot}%{_docdir}/avocado
 %{__cp} -r examples/wrappers %{buildroot}%{_docdir}/avocado
 %{__cp} -r examples/yaml_to_mux %{buildroot}%{_docdir}/avocado
-%{__cp} -r examples/yaml_to_mux_loader %{buildroot}%{_docdir}/avocado
 %{__cp} -r examples/varianter_pict %{buildroot}%{_docdir}/avocado
 %{__cp} -r examples/varianter_cit %{buildroot}%{_docdir}/avocado
 find %{buildroot}%{_docdir}/avocado -type f -name '*.py' -exec %{__chmod} -c -x {} ';'
@@ -239,24 +183,12 @@ find %{buildroot}%{_docdir}/avocado -type f -name '*.py' -exec %{__chmod} -c -x 
 pushd optional_plugins/html
 %{__python3} setup.py develop --user
 popd
-%if %{with_python3_fabric}
-pushd optional_plugins/runner_remote
-%{__python3} setup.py develop --user
-popd
-pushd optional_plugins/runner_vm
-%{__python3} setup.py develop --user
-popd
-pushd optional_plugins/runner_docker
-%{__python3} setup.py develop --user
-popd
-%endif
+%if ! 0%{?rhel}
 pushd optional_plugins/resultsdb
 %{__python3} setup.py develop --user
 popd
+%endif
 pushd optional_plugins/varianter_yaml_to_mux
-%{__python3} setup.py develop --user
-popd
-pushd optional_plugins/loader_yaml
 %{__python3} setup.py develop --user
 popd
 pushd optional_plugins/golang
@@ -271,51 +203,41 @@ popd
 pushd optional_plugins/result_upload
 %{__python3} setup.py develop --user
 popd
-pushd optional_plugins/glib
-%{__python3} setup.py develop --user
-popd
 # LANG: to make the results predictable, we pin the language
 # that is used during test execution.
 # AVOCADO_CHECK_LEVEL: package build environments have the least
 # amount of resources we have observed so far.  Let's avoid tests that
 # require too much resources or are time sensitive
-# UNITTEST_AVOCADO_CMD: the "avocado" command to be run during
-# unittests needs to be a Python specific one on Fedora >= 28.  Let's
-# use the one that was setup in the source tree by the "setup.py
-# develop --user" step and is guaranteed to be version specific.
-LANG=en_US.UTF-8 AVOCADO_CHECK_LEVEL=0 UNITTEST_AVOCADO_CMD=$HOME/.local/bin/avocado %{__python3} selftests/run
+PATH=$HOME/.local/bin:$PATH LANG=en_US.UTF-8 AVOCADO_CHECK_LEVEL=0 %{__python3} selftests/run
 %endif
 
 %files -n python3-%{srcname}
 %defattr(-,root,root,-)
 %doc README.rst LICENSE
 %{_bindir}/avocado
-%{_bindir}/avocado-rest-client
+%{_bindir}/avocado-runner
+%{_bindir}/avocado-runner-noop
+%{_bindir}/avocado-runner-exec
+%{_bindir}/avocado-runner-exec-test
+%{_bindir}/avocado-runner-python-unittest
+%{_bindir}/avocado-runner-avocado-instrumented
+%{_bindir}/avocado-runner-tap
+%{_bindir}/avocado-software-manager
 %{python3_sitelib}/avocado*
 %exclude %{python3_sitelib}/avocado_result_html*
-%exclude %{python3_sitelib}/avocado_runner_remote*
-%exclude %{python3_sitelib}/avocado_runner_vm*
-%exclude %{python3_sitelib}/avocado_runner_docker*
 %exclude %{python3_sitelib}/avocado_resultsdb*
-%exclude %{python3_sitelib}/avocado_loader_yaml*
 %exclude %{python3_sitelib}/avocado_golang*
 %exclude %{python3_sitelib}/avocado_varianter_yaml_to_mux*
 %exclude %{python3_sitelib}/avocado_varianter_pict*
 %exclude %{python3_sitelib}/avocado_varianter_cit*
 %exclude %{python3_sitelib}/avocado_result_upload*
-%exclude %{python3_sitelib}/avocado_glib*
 %exclude %{python3_sitelib}/avocado_framework_plugin_result_html*
-%exclude %{python3_sitelib}/avocado_framework_plugin_runner_remote*
-%exclude %{python3_sitelib}/avocado_framework_plugin_runner_vm*
-%exclude %{python3_sitelib}/avocado_framework_plugin_runner_docker*
 %exclude %{python3_sitelib}/avocado_framework_plugin_resultsdb*
 %exclude %{python3_sitelib}/avocado_framework_plugin_varianter_yaml_to_mux*
 %exclude %{python3_sitelib}/avocado_framework_plugin_varianter_pict*
 %exclude %{python3_sitelib}/avocado_framework_plugin_varianter_cit*
-%exclude %{python3_sitelib}/avocado_framework_plugin_loader_yaml*
 %exclude %{python3_sitelib}/avocado_framework_plugin_golang*
 %exclude %{python3_sitelib}/avocado_framework_plugin_result_upload*
-%exclude %{python3_sitelib}/avocado_framework_plugin_glib*
 %exclude %{python3_sitelib}/tests*
 
 %package -n python3-%{srcname}-common
@@ -326,19 +248,13 @@ Common files (such as configuration) for the Avocado Testing Framework.
 
 %files -n python3-%{srcname}-common
 %{_mandir}/man1/avocado.1.gz
-%{_mandir}/man1/avocado-rest-client.1.gz
 %dir %{_sysconfdir}/avocado
-%dir %{_sysconfdir}/avocado/conf.d
 %dir %{_sysconfdir}/avocado/sysinfo
 %dir %{_sysconfdir}/avocado/scripts
 %dir %{_sysconfdir}/avocado/scripts/job
 %dir %{_sysconfdir}/avocado/scripts/job/pre.d
 %dir %{_sysconfdir}/avocado/scripts/job/post.d
 %dir %{_sharedstatedir}/avocado
-%config(noreplace)%{_sysconfdir}/avocado/avocado.conf
-%config(noreplace)%{_sysconfdir}/avocado/conf.d/README
-%config(noreplace)%{_sysconfdir}/avocado/conf.d/gdb.conf
-%config(noreplace)%{_sysconfdir}/avocado/conf.d/jobscripts.conf
 %config(noreplace)%{_sysconfdir}/avocado/sysinfo/commands
 %config(noreplace)%{_sysconfdir}/avocado/sysinfo/files
 %config(noreplace)%{_sysconfdir}/avocado/sysinfo/profilers
@@ -358,55 +274,7 @@ arbitrary filesystem location.
 %{python3_sitelib}/avocado_result_html*
 %{python3_sitelib}/avocado_framework_plugin_result_html*
 
-%if %{with_python3_fabric}
-%package -n python3-%{srcname}-plugins-runner-remote
-Summary: Avocado Runner for Remote Execution
-Requires: python3-%{srcname} == %{version}
-Requires: python3-fabric3
-
-%description -n python3-%{srcname}-plugins-runner-remote
-Allows Avocado to run jobs on a remote machine, by means of an SSH
-connection.  Avocado must be previously installed on the remote machine.
-
-%files -n python3-%{srcname}-plugins-runner-remote
-%{python3_sitelib}/avocado_runner_remote*
-%{python3_sitelib}/avocado_framework_plugin_runner_remote*
-%endif
-
-%if %{with_python3_fabric}
-%package -n python3-%{srcname}-plugins-runner-vm
-Summary: Avocado Runner for libvirt VM Execution
-Requires: python3-%{srcname} == %{version}
-Requires: python3-%{srcname}-plugins-runner-remote == %{version}
-Requires: python3-libvirt
-
-%description -n python3-%{srcname}-plugins-runner-vm
-Allows Avocado to run jobs on a libvirt based VM, by means of
-interaction with a libvirt daemon and an SSH connection to the VM
-itself.  Avocado must be previously installed on the VM.
-
-%files -n python3-%{srcname}-plugins-runner-vm
-%{python3_sitelib}/avocado_runner_vm*
-%{python3_sitelib}/avocado_framework_plugin_runner_vm*
-%endif
-
-%if %{with_python3_fabric}
-%package -n python3-%{srcname}-plugins-runner-docker
-Summary: Avocado Runner for Execution on Docker Containers
-Requires: python3-%{srcname} == %{version}
-Requires: python3-%{srcname}-plugins-runner-remote == %{version}
-Requires: python3-aexpect
-
-%description -n python3-%{srcname}-plugins-runner-docker
-Allows Avocado to run jobs on a Docker container by interacting with a
-Docker daemon and attaching to the container itself.  Avocado must
-be previously installed on the container.
-
-%files -n python3-%{srcname}-plugins-runner-docker
-%{python3_sitelib}/avocado_runner_docker*
-%{python3_sitelib}/avocado_framework_plugin_runner_docker*
-%endif
-
+%if ! 0%{?rhel}
 %package -n python3-%{srcname}-plugins-resultsdb
 Summary: Avocado plugin to propagate job results to ResultsDB
 Requires: python3-%{srcname} == %{version}
@@ -419,7 +287,7 @@ server.
 %files -n python3-%{srcname}-plugins-resultsdb
 %{python3_sitelib}/avocado_resultsdb*
 %{python3_sitelib}/avocado_framework_plugin_resultsdb*
-%config(noreplace)%{_sysconfdir}/avocado/conf.d/resultsdb.conf
+%endif
 
 %package -n python3-%{srcname}-plugins-varianter-yaml-to-mux
 Summary: Avocado plugin to generate variants out of yaml files
@@ -434,18 +302,6 @@ defined in a yaml file(s).
 %{python3_sitelib}/avocado_varianter_yaml_to_mux*
 %{python3_sitelib}/avocado_framework_plugin_varianter_yaml_to_mux*
 
-%package -n python3-%{srcname}-plugins-loader-yaml
-Summary: Avocado Plugin that loads tests from YAML files
-Requires: python3-%{srcname}-plugins-varianter-yaml-to-mux == %{version}
-
-%description -n python3-%{srcname}-plugins-loader-yaml
-Can be used to produce a test suite from definitions in a YAML file,
-similar to the one used in the yaml_to_mux varianter plugin.
-
-%files -n python3-%{srcname}-plugins-loader-yaml
-%{python3_sitelib}/avocado_loader_yaml*
-%{python3_sitelib}/avocado_framework_plugin_loader_yaml*
-
 %package -n python3-%{srcname}-plugins-golang
 Summary: Avocado Plugin for Execution of golang tests
 Requires: python3-%{srcname} == %{version}
@@ -458,6 +314,7 @@ also run them.
 %files -n python3-%{srcname}-plugins-golang
 %{python3_sitelib}/avocado_golang*
 %{python3_sitelib}/avocado_framework_plugin_golang*
+%{_bindir}/avocado-runner-golang
 
 %package -n python3-%{srcname}-plugins-varianter-pict
 Summary: Varianter with combinatorial capabilities by PICT
@@ -495,19 +352,6 @@ a dedicated sever.
 %files -n python3-%{srcname}-plugins-result-upload
 %{python3_sitelib}/avocado_result_upload*
 %{python3_sitelib}/avocado_framework_plugin_result_upload*
-%config(noreplace)%{_sysconfdir}/avocado/conf.d/result_upload.conf
-
-%package -n python3-%{srcname}-plugins-glib
-Summary: Avocado Plugin for Execution of GLib Test Framework tests
-Requires: python3-%{srcname} == %{version}
-
-%description -n python3-%{srcname}-plugins-glib
-This optional plugin is intended to list and run tests written in the
-GLib Test Framework.
-
-%files -n python3-%{srcname}-plugins-glib
-%{python3_sitelib}/avocado_glib*
-%{python3_sitelib}/avocado_framework_plugin_glib*
 
 %package -n python3-%{srcname}-examples
 Summary: Avocado Test Framework Example Tests
@@ -525,7 +369,6 @@ examples of how to write tests on your own.
 %{_docdir}/avocado/tests
 %{_docdir}/avocado/wrappers
 %{_docdir}/avocado/yaml_to_mux
-%{_docdir}/avocado/yaml_to_mux_loader
 %{_docdir}/avocado/varianter_pict
 %{_docdir}/avocado/varianter_cit
 
@@ -541,157 +384,118 @@ Again Shell code (and possibly other similar shells).
 %{_libexecdir}/avocado*
 
 %changelog
+* Mon Nov 16 2020 Cleber Rosa <cleber@redhat.com> - 83.0-1
+- New release
+
+* Thu Sep 17 2020 Cleber Rosa <cleber@redhat.com> - 82.0-3
+- Added avocado-runner-golang script to golang package
+
+* Wed Sep 16 2020 Cleber Rosa <cleber@redhat.com> - 82.0-2
+- Removed yaml to mux loader plugin
+- Removed glib plugin
+
+* Fri Sep 11 2020 Cleber Rosa <cleber@redhat.com> - 82.0-1
+- New release
+
+* Mon Aug 31 2020 Cleber Rosa <cleber@redhat.com> - 81.0-1
+- New release
+
+* Tue Jun 23 2020 Cleber Rosa <cleber@redhat.com> - 80.0-2
+- Add on extra character to short commit
+
+* Fri Jun  5 2020 Cleber Rosa <cleber@redhat.com> - 80.0-2
+- Removed python3-libvirt build requirement
+
+* Fri Jun  5 2020 Cleber Rosa <cleber@redhat.com> - 80.0-1
+- New release
+
+* Thu Jun  4 2020 Cleber Rosa <cleber@redhat.com> - 79.0-2
+- Dropped use of custom avocado command for tests
+
+* Tue May 12 2020 Cleber Rosa <cleber@redhat.com> - 79.0-1
+- Do not build deprecated runners
+
+* Mon May 11 2020 Cleber Rosa <cleber@redhat.com> - 79.0-0
+- New release
+- Added current user's ~/local/.bin to the PATH environment variable
+  while running tests, so that avocado-runner-* scripts can be found
+- Moved comment to new lines closing the conditionals, to avoid
+  errors from rpmlint and rpmbuild
+
+* Mon Apr 13 2020 Cleber Rosa <cleber@redhat.com> - 78.0-0
+- New release
+
+* Tue Mar 17 2020 Cleber Rosa <cleber@redhat.com> - 77.0-0
+- New release
+
+* Mon Mar 16 2020 Cleber Rosa <cleber@redhat.com> - 76.0-1
+- Removed PYTHONWARNINGS environment variable when running tests
+
+* Fri Feb 21 2020 Cleber Rosa <cleber@redhat.com> - 76.0-0
+- New release
+
+* Thu Feb 20 2020 Cleber Rosa <cleber@redhat.com> - 75.1-3
+- Added new avocado-software-manager script
+
+* Thu Feb 20 2020 Cleber Rosa <cleber@redhat.com> - 75.1-2
+- Added new avocado-runner-tap script
+
+* Thu Feb 20 2020 Cleber Rosa <cleber@redhat.com> - 75.1-1
+- Ignore Avocado warnings that use Python's warning module when
+  running tests
+
+* Mon Jan 20 2020 Cleber Rosa <cleber@redhat.com> - 75.1-0
+- New release
+
+* Mon Jan 20 2020 Cleber Rosa <cleber@redhat.com> - 75.0-0
+- New release
+
+* Sun Dec 22 2019 Cleber Rosa <cleber@redhat.com> - 74.0-0
+- New release
+
+* Fri Nov 22 2019 Cleber Rosa <cleber@redhat.com> - 73.0-0
+- New release
+
+* Fri Nov 22 2019 Cleber Rosa <cleber@redhat.com> - 72.0-3
+- Update sysinfo configuration files location
+
+* Mon Nov 18 2019 Cleber Rosa <cleber@redhat.com> - 72.0-2
+- Add EL/EPEL8 support
+
+* Fri Sep 27 2019 Cleber Rosa <cleber@redhat.com> - 72.0-1
+- Added new avocado-runner-* runner scripts
+
+* Tue Sep 17 2019 Cleber Rosa <cleber@redhat.com> - 72.0-0
+- New release
+
+* Thu Sep  5 2019 Cleber Rosa <cleber@redhat.com> - 71.0-2
+- Added nrunner standalone scripts
+
+* Mon Aug 19 2019 Cleber Rosa <cleber@redhat.com> - 71.0-1
+- Use newer libvirt Python bindings package name
+- Dropped older libvirt Python lack of egg info workaround
+
+* Thu Aug 15 2019 Cleber Rosa <cleber@redhat.com> - 71.0-0
+- New release
+
+* Tue Jul  9 2019 Cleber Rosa <cleber@redhat.com> - 70.0-1
+- Add config file to glib plugin subpackage
+
+* Wed Jun 26 2019 Cleber Rosa <cleber@redhat.com> - 70.0-0
+- New release
+
+* Tue Jun 25 2019 Cleber Rosa <cleber@redhat.com> - 69.0-3
+- Drop python3-sphinx build requirement
+- Cleaned up some of the changelog history
+
+* Tue Jun 25 2019 Cleber Rosa <cleber@redhat.com> - 69.0-2
+- Build without python3-aexpect on Fedora 30 and later
+
+* Tue May 28 2019 Merlin Mathesius <mmathesi@redhat.com> - 69.0-1
+- Disable components dependent upon Fiber in Fedora 31 and later,
+  since avocado is currently incompatible with the new Fiber API.
+- Remove pyliblzma as it has always been Python 2-only, and it is
+  no longer available as of F31.
+
 * Tue Feb 26 2019 Cleber Rosa <cleber@redhat.com> - 69.0-0
 - New release
-
-* Wed Feb 13 2019 Cleber Rosa <cleber@redhat.com> - 68.0-0
-- New release
-
-* Mon Feb  4 2019 Cleber Rosa <cleber@redhat.com> - 67.0-1
-- python2-resultsdb_api package has been removed in F30 so
-  python2-avocado-plugins-resultsdb was also disabled.
-
-* Mon Dec 17 2018 Cleber Rosa <cleber@redhat.com> - 67.0-0
-- New release
-
-* Mon Dec 17 2018 Cleber Rosa <cleber@redhat.com> - 66.0-3
-- Use proper name of Python netifaces module package on EL7
-
-* Mon Dec 10 2018 Cleber Rosa <cleber@redhat.com> - 66.0-2
-- Replaced pystache requirement for jinja2
-
-* Wed Dec  5 2018 Cleber Rosa <cleber@redhat.com> - 66.0-1
-- Added libcdio, genisoimage and psmisc as build deps
-
-* Tue Nov 20 2018 Cleber Rosa <cleber@redhat.com> - 66.0-0
-- New release
-
-* Tue Oct  2 2018 Cleber Rosa <cleber@redhat.com> - 65.0-0
-- New release
-
-* Mon Aug 27 2018 Cleber Rosa <cleber@redhat.com> - 64.0-0
-- Added pycdlib as requirements
-- New release
-
-* Wed Jul 25 2018 Cleber Rosa <cleber@redhat.com> - 63.0-2
-- Added CIT varianter plugin sub-packages
-
-* Mon Jul 23 2018 Merlin Mathesius <mmathesi@redhat.com> - 63.0-1
-- Enable python3 versions of runner and resultsdb plugins when
-  package dependencies are available.
-
-* Tue Jul 17 2018 Cleber Rosa <cleber@redhat.com> - 63.0-0
-- New release
-
-* Wed Jun 20 2018 Cleber Rosa <cleber@redhat.com> - 62.0-1
-- Added new python[2]-enum34 requirement
-
-* Tue Jun 12 2018 Cleber Rosa <cleber@redhat.com> - 62.0-0
-- New release
-
-* Tue May  1 2018 Cleber Rosa <cleber@redhat.com> - 61.0-1
-- Use Python version specific "avocado" scripts on tests
-
-* Tue Apr 24 2018 Cleber Rosa <cleber@redhat.com> - 61.0-0
-- New release
-- Added python3-yaml require to varianter-yaml-to-mux package
-- Force a locale with utf-8 encoding to run tests
-
-* Wed Apr  4 2018 Cleber Rosa <cleber@redhat.com> - 60.0-2
-- Moved all requirements to python2-avocado and python3-avocado
-- Added python_provides macro on Python 3 package
-- Filter out python binaries from requirements
-- Added explicit six requirement on Python 2 packages
-
-* Wed Mar 28 2018 Cleber Rosa <cleber@redhat.com> - 60.0-1
-- Moved "common" dep into python2-avocado and python3-avocado
-
-* Wed Mar 28 2018 Cleber Rosa <cleber@redhat.com> - 60.0-0
-- New release
-
-* Mon Mar 19 2018 Cleber Rosa <cleber@redhat.com> - 59.0-2
-- Removed backward compatibility with name avocado on plugins
-- Removed extra dependencies on Fedora 24 for runner-remote
-- Added python-avocado requirement for golang plugin
-- Added new common sub-package
-- Make bash package independent of Python version
-- Set supported Python major version explicitly to 2
-- Added Python 3 packages
-
-* Thu Mar  8 2018 Cleber Rosa <cleber@redhat.com> - 59.0-1
-- Remove backward compatibility with name avocado
-- Remove hack to workaround fabric bugs on Fedora 24
-- Use real package name for python YAML package on EL
-- Use exact package names on requires
-- Remove unecessary conditional for kmod
-
-* Wed Feb 28 2018 Cleber Rosa <cleber@redhat.com> - 59.0-0
-- New upstream release
-- Added glib plugin subpackage
-
-* Tue Jan 23 2018 Cleber Rosa <cleber@redhat.com> - 58.0-1
-- Require a lower six version on EL7
-
-* Tue Jan 23 2018 Cleber Rosa <cleber@redhat.com> - 58.0-0
-- New upstream release
-
-* Sat Jan  6 2018 Cleber Rosa <cleber@redhat.com> - 57.0-3
-- Move the avocado package config files to the system location
-- Add missing configuration files for sub packages
-- Adapt to change in example file installation
-- Remove man pages source files from package
-- Add bash subpackage
-
-* Tue Dec 19 2017 Cleber Rosa <cleber@redhat.com> - 57.0-2
-- Removed patch added on release 1, considering it's upstream
-
-* Tue Dec 19 2017 Cleber Rosa <cleber@redhat.com> - 57.0-1
-- Add patch to skip tests on EPEL 7 due to mock version
-
-* Tue Dec 19 2017 Cleber Rosa <cleber@redhat.com> - 57.0-0
-- New upstream release
-
-* Fri Dec 15 2017 Cleber Rosa <cleber@redhat.com> - 56.0-1
-- Added result_upload plugin
-
-* Tue Nov 21 2017 Cleber Rosa <cleber@redhat.com> - 56.0-0
-- New upstream release
-
-* Thu Nov 16 2017 Cleber Rosa <cleber@redhat.com> - 55.0-1
-- Introduced sub-package plugins-varianter-pict
-
-* Tue Oct 17 2017 Cleber Rosa <cleber@redhat.com> - 55.0-0
-- New upstream release
-
-* Mon Oct 16 2017 Cleber Rosa <cleber@redhat.com> - 54.1-3
-- Excluded avocado_loader_yaml files from main package
-- Package recently introduced golang plugin
-
-* Wed Oct  4 2017 Cleber Rosa <cleber@redhat.com> - 54.1-2
-- Remove python-flexmock requirement
-
-* Wed Oct  4 2017 Cleber Rosa <cleber@redhat.com> - 54.1-1
-- Add explicit BuildRequires for python-six
-
-* Wed Sep 20 2017 Cleber Rosa <cleber@redhat.com> - 54.1-0
-- New minor upstream release
-
-* Wed Sep 20 2017 Cleber Rosa <cleber@redhat.com> - 54.0-0
-- New upstream release
-
-* Tue Aug 22 2017 Cleber Rosa <cleber@redhat.com> - 53.0-1
-- Use variable name for configuration dir
-- Clean up old changelog entries
-- Include other example files
-
-* Tue Aug 15 2017 Cleber Rosa <cleber@redhat.com> - 53.0-0
-- New upstream release
-
-* Mon Aug 14 2017 Cleber Rosa <cleber@redhat.com> - 52.0-2
-- Add python[2]-yaml requirements
-
-* Tue Jun 27 2017 Cleber Rosa <cleber@redhat.com> - 52.0-1
-- Fix python-aexpect depedency on EL7
-
-* Mon Jun 26 2017 Cleber Rosa <cleber@redhat.com> - 52.0-0
-- New upstream release

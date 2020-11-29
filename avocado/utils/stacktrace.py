@@ -1,13 +1,11 @@
 """
 Traceback standard module plus some additional APIs.
 """
-from traceback import format_exception
-import logging
 import inspect
+import logging
 import pickle
 from pprint import pformat
-
-from six import string_types, iteritems
+from traceback import format_exception
 
 
 def tb_info(exc_info):
@@ -36,15 +34,15 @@ def log_exc_info(exc_info, logger=''):
     :param exc_info: Exception info produced by sys.exc_info()
     :param logger: Name or logger instance (defaults to '')
     """
-    if isinstance(logger, string_types):
+    if isinstance(logger, str):
         logger = logging.getLogger(logger)
     logger.error('')
     called_from = inspect.currentframe().f_back
     logger.error("Reproduced traceback from: %s:%s",
                  called_from.f_code.co_filename, called_from.f_lineno)
-    for line in tb_info(exc_info):
-        for l in line.splitlines():
-            logger.error(l)
+    for trace in tb_info(exc_info):
+        for line in trace.splitlines():
+            logger.error(line)
     logger.error('')
 
 
@@ -55,7 +53,7 @@ def log_message(message, logger=''):
     :param message: Message
     :param logger: Name or logger instance (defaults to '')
     """
-    if isinstance(logger, string_types):
+    if isinstance(logger, str):
         logger = logging.getLogger(logger)
     for line in message.splitlines():
         logger.error(line)
@@ -84,17 +82,17 @@ def analyze_unpickable_item(path_prefix, obj):
             subitems = enumerate(obj.__iter__())
             path_prefix += "<%s>"
         elif hasattr(obj, "__dict__"):
-            subitems = iteritems(obj.__dict__)
+            subitems = obj.__dict__.items()
             path_prefix += ".%s"
         else:
             return [(path_prefix, obj)]
-    except Exception:
+    except Exception:  # pylint: disable=W0703
         return [(path_prefix, obj)]
     unpickables = []
     for key, value in subitems:
         try:
             pickle.dumps(value)
-        except Exception:
+        except pickle.PickleError:
             ret = analyze_unpickable_item(path_prefix % key, value)
             if ret:
                 unpickables.extend(ret)
@@ -112,7 +110,7 @@ def str_unpickable_object(obj):
     """
     try:
         pickle.dumps(obj)
-    except Exception:
+    except pickle.PickleError:
         pass
     else:
         raise ValueError("This object is pickable:\n%s" % pformat(obj))

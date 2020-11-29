@@ -24,16 +24,8 @@ a custom Varianter plugin.
 import collections
 import itertools
 import re
-import os
 
-from six import iterkeys, iteritems
-from six.moves import xrange as range
-from six.moves import zip
-
-from avocado.core import tree
-from avocado.core import varianter
-from avocado.core import output
-
+from avocado.core import output, tree, varianter
 
 #
 # Multiplex-enabled tree objects
@@ -42,7 +34,7 @@ REMOVE_NODE = 0
 REMOVE_VALUE = 1
 
 
-class MuxTree(object):
+class MuxTree:
 
     """
     Object representing part of the tree from the root to leaves or another
@@ -150,7 +142,7 @@ class MuxTree(object):
         return True
 
 
-class MuxPlugin(object):
+class MuxPlugin:
     """
     Base implementation of Mux-like Varianter plugin. It should be used as
     a base class in conjunction with
@@ -158,11 +150,10 @@ class MuxPlugin(object):
     """
     root = None
     variants = None
-    default_params = None
     paths = None
-    debug = None
+    variant_ids = []
 
-    def initialize_mux(self, root, paths, debug):
+    def initialize_mux(self, root, paths):
         """
         Initialize the basic values
 
@@ -171,9 +162,10 @@ class MuxPlugin(object):
         """
         self.root = root
         self.paths = paths
-        self.debug = debug
-        self.variant_ids = [varianter.generate_variant_id(variant)
-                            for variant in MuxTree(self.root)]
+        if self.root is not None:
+            self.variant_ids = [varianter.generate_variant_id(variant)
+                                for variant in MuxTree(self.root)]
+            self.variants = MuxTree(self.root)
 
     def __iter__(self):
         """
@@ -186,20 +178,6 @@ class MuxPlugin(object):
             yield {"variant_id": vid,
                    "variant": variant,
                    "paths": self.paths}
-
-    def update_defaults(self, defaults):
-        """
-        See
-        :meth:`avocado.core.plugin_interfaces.Varianter.update_defaults`
-        """
-        if self.root is None:
-            return
-        if self.default_params:
-            self.default_params.merge(defaults)
-        self.default_params = defaults
-        combination = defaults
-        combination.merge(self.root)
-        self.variants = MuxTree(combination)
 
     def to_str(self, summary, variants, **kwargs):
         """
@@ -223,7 +201,7 @@ class MuxPlugin(object):
             out.append("Multiplex variants (%s):" % len(self))
             for variant in self:
                 out.extend(varianter.variant_to_str(variant, variants - 1,
-                                                    kwargs, self.debug))
+                                                    kwargs))
         return "\n".join(out)
 
     def __len__(self):
@@ -235,7 +213,7 @@ class MuxPlugin(object):
         return sum(1 for _ in self)
 
 
-class OutputValue(object):  # only container pylint: disable=R0903
+class OutputValue:  # only container pylint: disable=R0903
 
     """ Ordinary value with some debug info """
 
@@ -285,7 +263,7 @@ class ValueDict(dict):  # only container pylint: disable=R0903
         self.yaml = srcyaml
         self.node = node
         self.yaml_per_key = {}
-        for key, value in iteritems(values):
+        for key, value in values.items():
             self[key] = value
 
     def __setitem__(self, key, value):
@@ -311,7 +289,7 @@ class ValueDict(dict):  # only container pylint: disable=R0903
 
     def iteritems(self):
         """ Slower implementation with the use of __getitem__ """
-        for key in iterkeys(self):
+        for key in self:
             yield key, self[key]
 
     def items(self):
@@ -319,7 +297,7 @@ class ValueDict(dict):  # only container pylint: disable=R0903
         return self.iteritems()
 
 
-class Control(object):  # Few methods pylint: disable=R0903
+class Control:  # Few methods pylint: disable=R0903
 
     """ Container used to identify node vs. control sequence """
 
@@ -367,7 +345,7 @@ class MuxTreeNode(tree.TreeNode):
                 elif ctrl.code == REMOVE_VALUE:
                     remove = []
                     regexp = re.compile(ctrl.value)
-                    for key in iterkeys(self.value):
+                    for key in self.value:
                         if regexp.match(key):
                             remove.append(key)
                     for key in remove:
@@ -377,60 +355,6 @@ class MuxTreeNode(tree.TreeNode):
             self.multiplex = True
         elif other.multiplex is False:
             self.multiplex = False
-
-
-class TreeNodeDebug(tree.TreeNode):  # only container pylint: disable=R0903
-
-    """
-    Debug version of TreeNodeDebug
-    :warning: Origin of the value is appended to all values thus it's not
-    suitable for running tests.
-    """
-
-    def __init__(self, name='', value=None, parent=None, children=None,
-                 srcyaml=None):
-        if value is None:
-            value = {}
-        if srcyaml:
-            srcyaml = os.path.relpath(srcyaml)
-        super(TreeNodeDebug, self).__init__(name,
-                                            ValueDict(srcyaml, self, value),
-                                            parent, children)
-        self.yaml = srcyaml
-
-    def merge(self, other):
-        """
-        Override origin with the one from other tree. Updated/Newly set values
-        are going to use this location as origin.
-        """
-        if hasattr(other, 'yaml') and other.yaml:
-            srcyaml = os.path.relpath(other.yaml)
-            # when we use TreeNodeDebug, value is always ValueDict
-            self.value.yaml_per_key.update(other.value.yaml_per_key)    # pylint: disable=E1101
-        else:
-            srcyaml = "Unknown"
-        self.yaml = srcyaml
-        self.value.yaml = srcyaml
-        return super(TreeNodeDebug, self).merge(other)
-
-
-class MuxTreeNodeDebug(MuxTreeNode, TreeNodeDebug):
-
-    """
-    Debug version of TreeNodeDebug
-    :warning: Origin of the value is appended to all values thus it's not
-    suitable for running tests.
-    """
-
-    def __init__(self, name='', value=None, parent=None, children=None,
-                 srcyaml=None):
-        MuxTreeNode.__init__(self, name, value, parent, children)
-        TreeNodeDebug.__init__(self, name, value, parent, children,
-                               srcyaml)
-
-    def merge(self, other):
-        MuxTreeNode.merge(self, other)
-        TreeNodeDebug.merge(self, other)
 
 
 #

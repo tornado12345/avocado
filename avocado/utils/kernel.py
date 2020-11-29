@@ -13,18 +13,23 @@
 # Author: Ruda Moura <rmoura@redhat.com>
 # Author: Santhosh G <santhog4@linux.vnet.ibm.com>
 
+"""
+Provides utilities for the Linux kernel.
+"""
+
+import logging
+import multiprocessing
 import os
 import shutil
-import logging
 import tempfile
 from distutils.version import LooseVersion  # pylint: disable=E0611
 
-from . import asset, archive, build, distro, process
+from . import archive, asset, build, distro, process
 
-log = logging.getLogger('avocado.test')
+LOG = logging.getLogger('avocado.test')
 
 
-class KernelBuild(object):
+class KernelBuild:
 
     """
     Build the Linux Kernel from official tarballs.
@@ -44,6 +49,7 @@ class KernelBuild(object):
         :param data_dirs: list of directories to keep the downloaded kernel
         :return: None.
         """
+        self.asset_path = None
         self.version = version
         self.config_path = config_path
         self.distro = distro.detect()
@@ -54,14 +60,33 @@ class KernelBuild(object):
             self.data_dirs = data_dirs
         else:
             self.data_dirs = [self.work_dir]
-        self.build_dir = os.path.join(self.work_dir, 'build')
-        if not os.path.isdir(self.build_dir):
-            os.makedirs(self.build_dir)
+        self._build_dir = os.path.join(self.work_dir, 'linux-%s' % self.version)
 
     def __repr__(self):
         return "KernelBuild('%s, %s, %s')" % (self.version,
                                               self.config_path,
                                               self.work_dir)
+
+    @property
+    def vmlinux(self):
+        """
+        Return the vmlinux path if the file exists
+        """
+        if not self.build_dir:
+            return None
+        vmlinux_path = os.path.join(self.build_dir, 'vmlinux')
+        if os.path.isfile(vmlinux_path):
+            return vmlinux_path
+        return None
+
+    @property
+    def build_dir(self):
+        """
+        Return the build path if the directory exists
+        """
+        if os.path.isdir(self._build_dir):
+            return self._build_dir
+        return None
 
     def _build_kernel_url(self, base_url=None):
         kernel_file = self.SOURCE.format(version=self.version)
@@ -85,22 +110,50 @@ class KernelBuild(object):
     def uncompress(self):
         """
         Uncompress kernel source.
-        """
-        log.info("Uncompressing tarball")
-        archive.extract(self.asset_path, self.work_dir)
 
-    def configure(self):
+        :raises: Exception in case the tarball is not downloaded
+        """
+        if self.asset_path:
+            LOG.info("Uncompressing tarball")
+            archive.extract(self.asset_path, self.work_dir)
+        else:
+            raise Exception("Unable to find the tarball")
+
+    def configure(self, targets=('defconfig'), extra_configs=None):
         """
         Configure/prepare kernel source to build.
-        """
-        self.linux_dir = os.path.join(self.work_dir, 'linux-%s' % self.version)
-        build.make(self.linux_dir, extra_args='-C %s mrproper' %
-                   self.linux_dir)
-        if self.config_path is not None:
-            dotconfig = os.path.join(self.linux_dir, '.config')
-            shutil.copy(self.config_path, dotconfig)
 
-    def build(self, binary_package=False):
+        :param targets: configuration targets. Default is 'defconfig'.
+        :type targets: list of str
+        :param extra_configs: additional configurations in the form of
+                              CONFIG_NAME=VALUE.
+        :type extra_configs: list of str
+        """
+        build.make(self._build_dir, extra_args='-C %s mrproper' %
+                   self._build_dir)
+        if self.config_path is not None:
+            dotconfig = os.path.join(self._build_dir, '.config')
+            shutil.copy(self.config_path, dotconfig)
+            build.make(self._build_dir, extra_args='-C %s olddefconfig' %
+                       self._build_dir)
+        else:
+            if isinstance(targets, list):
+                _targets = " ".join(targets)
+            else:
+                _targets = targets
+            build.make(self.build_dir,
+                       extra_args='-C %s %s' % (self.build_dir, _targets))
+        if extra_configs:
+            with tempfile.NamedTemporaryFile(mode='w+t',
+                                             prefix='avocado_') as config_file:
+                config_file.write('\n'.join(extra_configs))
+                config_file.flush()
+                cmd = ['cd', self._build_dir, '&&',
+                       './scripts/kconfig/merge_config.sh', '.config',
+                       config_file.name]
+                process.run(" ".join(cmd), shell=True)
+
+    def build(self, binary_package=False, njobs=multiprocessing.cpu_count()):
         """
         Build kernel from source.
 
@@ -108,31 +161,38 @@ class KernelBuild(object):
                                   platform package is built
                                   for install() to use
         :type binary_pacakge: bool
+        :param njobs: number of jobs. It is mapped to the -j option from make.
+                      If njobs is None then do not limit the number of jobs
+                      (e.g. uses -j without value). The -j is omitted if a
+                      value equal or less than zero is passed. Default value
+                      is set to `multiprocessing.cpu_count()`.
+        :type njobs: int or None
         """
-        log.info("Starting build the kernel")
-        build_output_format = ""
+        make_args = []
+        LOG.info("Starting build the kernel")
+
+        if njobs is None:
+            make_args.append('-j')
+        elif njobs > 0:
+            make_args.extend(['-j', str(njobs)])
+        make_args.extend(['-C', self._build_dir])
+
         if binary_package is True:
             if self.distro.name == "Ubuntu":
-                build_output_format = "deb-pkg"
-        if self.config_path is None:
-            build.make(self.linux_dir, extra_args='-C %s defconfig' %
-                       self.linux_dir)
-        else:
-            build.make(self.linux_dir, extra_args='-C %s olddefconfig' %
-                       self.linux_dir)
-        build.make(self.linux_dir, extra_args='-C %s %s' %
-                   (self.linux_dir, build_output_format))
+                make_args.append("deb-pkg")
+
+        build.make(self._build_dir, extra_args=" ".join(make_args))
 
     def install(self):
         """
         Install built kernel.
         """
-        log.info("Starting kernel install")
+        LOG.info("Starting kernel install")
         if self.distro.name == "Ubuntu":
             process.run('dpkg -i %s/*.deb' %
                         self.work_dir, shell=True, sudo=True)
         else:
-            log.info("Skipping kernel install")
+            LOG.info("Skipping kernel install")
 
     def __del__(self):
         shutil.rmtree(self.work_dir)

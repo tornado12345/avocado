@@ -17,16 +17,13 @@
 # Authors: Yiqiao Pu <ypu@redhat.com>
 
 
+import glob
+import logging
+import math
 import os
 import re
-import glob
-import math
-import logging
 
-from . import process
-from . import genio
-from . import wait
-from . import data_structures
+from . import data_structures, genio, process, wait
 from .data_structures import DataSize
 
 
@@ -250,6 +247,22 @@ def get_page_size():
     return int(output)
 
 
+def get_supported_huge_pages_size():
+    """
+    Get all supported huge page sizes for this system.
+
+    :return: list of Huge pages size (kB).
+    """
+    output = os.listdir('/sys/kernel/mm/hugepages/')
+    # Given the items in this directory are in the format hugepages-<size>kB,
+    # the <size> will always start from index 10.
+    output = [int(each[10:].rstrip('kB')) for each in output]
+    if os.uname()[4] in ['ppc64', 'ppc64le'] and b'PowerVM'\
+            in process.system_output("pseries_platform", ignore_status=True):
+        output.remove(16777216)
+    return output
+
+
 def get_huge_page_size():
     """
     Get size of the huge pages for this system.
@@ -391,7 +404,7 @@ def get_buddy_info(chunk_sizes, nodes="all", zones="all"):
         re_buddyinfo += "(%s)" % "|".join(nodes.split())
 
     if not re.findall(re_buddyinfo, buddy_info_content):
-        logging.warn("Can not find Nodes %s", nodes)
+        logging.warning("Can not find Nodes %s", nodes)
         return None
     re_buddyinfo += r".*?zone\s+"
     if zones == "all":
@@ -399,7 +412,7 @@ def get_buddy_info(chunk_sizes, nodes="all", zones="all"):
     else:
         re_buddyinfo += "(%s)" % "|".join(zones.split())
     if not re.findall(re_buddyinfo, buddy_info_content):
-        logging.warn("Can not find zones %s", zones)
+        logging.warning("Can not find zones %s", zones)
         return None
     re_buddyinfo += r"\s+([\s\d]+)"
 
@@ -452,7 +465,7 @@ def get_thp_value(feature):
         return value
 
 
-class _MemInfoItem(DataSize):
+class _MemInfoItem:
     """
     Representation of one item from /proc/meminfo
     """
@@ -464,7 +477,7 @@ class _MemInfoItem(DataSize):
         return getattr(datasize, attr)
 
 
-class MemInfo(object):
+class MemInfo:
     """
     Representation of /proc/meminfo
     """

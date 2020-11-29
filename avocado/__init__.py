@@ -13,10 +13,10 @@
 # Author: Lucas Meneghel Rodrigues <lmr@redhat.com>
 
 
-__all__ = ['main',
-           'Test',
+__all__ = ['Test',
            'VERSION',
            'fail_on',
+           'cancel_on',
            'skip',
            'skipIf',
            'skipUnless',
@@ -25,13 +25,16 @@ __all__ = ['main',
            'TestCancel']
 
 
-from avocado.core.job import main
+from avocado.core import register_core_options, initialize_plugins
+from avocado.core.settings import settings
+
+register_core_options()
+settings.merge_with_configs()
+initialize_plugins()
+settings.merge_with_configs()
+
+from avocado.core.decorators import (cancel_on, fail_on, skip, skipIf,
+                                     skipUnless)
+from avocado.core.exceptions import TestCancel, TestError, TestFail
 from avocado.core.test import Test
 from avocado.core.version import VERSION
-from avocado.core.decorators import fail_on
-from avocado.core.decorators import skip
-from avocado.core.decorators import skipIf
-from avocado.core.decorators import skipUnless
-from avocado.core.exceptions import TestError
-from avocado.core.exceptions import TestFail
-from avocado.core.exceptions import TestCancel

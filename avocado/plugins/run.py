@@ -19,17 +19,29 @@ Base Test Runner Plugins.
 import argparse
 import sys
 
-from avocado.core import exit_codes
-from avocado.core import job
-from avocado.core import loader
-from avocado.core import output
-from avocado.core.output import LOG_UI
-from avocado.core.plugin_interfaces import CLICmd
-from avocado.core.dispatcher import ResultDispatcher
+from avocado.core import exit_codes, job, loader, output, parser_common_args
 from avocado.core.dispatcher import JobPrePostDispatcher
+from avocado.core.output import LOG_UI
+from avocado.core.plugin_interfaces import CLICmd, Init
 from avocado.core.settings import settings
-from avocado.utils.data_structures import time_to_seconds
+from avocado.core.suite import TestSuite, TestSuiteError
 from avocado.utils import process
+
+
+class RunInit(Init):
+
+    name = 'run'
+    description = 'Initializes the run options'
+
+    def initialize(self):
+        help_msg = ('Defines the order of iterating through test suite '
+                    'and test variants')
+        settings.register_option(section='run',
+                                 key='execution_order',
+                                 choices=('tests-per-variant',
+                                          'variants-per-test'),
+                                 default='variants-per-test',
+                                 help_msg=help_msg)
 
 
 class Run(CLICmd):
@@ -59,184 +71,237 @@ class Run(CLICmd):
         """
         parser = super(Run, self).configure(parser)
 
-        parser.add_argument("reference", type=str, default=[], nargs='*',
-                            metavar="TEST_REFERENCE",
-                            help='List of test references (aliases or paths)')
+        help_msg = 'List of test references (aliases or paths)'
+        settings.register_option(section='run',
+                                 key='references',
+                                 key_type=list,
+                                 default=[],
+                                 nargs='*',
+                                 metavar='TEST_REFERENCE',
+                                 parser=parser,
+                                 help_msg=help_msg,
+                                 positional_arg=True)
 
-        parser.add_argument("-p", "--test-parameter", action="append",
-                            dest='test_parameters', default=[],
-                            metavar="NAME_VALUE", type=self._test_parameter,
-                            help="Parameter name and value to pass to all "
-                            "tests. This is only applicable when not using a "
-                            "varianter plugin. This option format must be "
-                            "given in the NAME=VALUE format, and may be given "
-                            "any number of times, or per parameter.")
+        help_msg = ('Parameter name and value to pass to all tests. This is '
+                    'only applicable when not using a varianter plugin. '
+                    'This option format must be given in the NAME=VALUE '
+                    'format, and may be given any number of times, or per '
+                    'parameter.')
+        settings.register_option(section='run',
+                                 key='test_parameters',
+                                 action='append',
+                                 default=[],
+                                 key_type=self._test_parameter,
+                                 metavar="NAME_VALUE",
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--test-parameter',
+                                 short_arg='-p')
 
-        parser.add_argument("-d", "--dry-run", action="store_true",
-                            help="Instead of running the test only "
-                            "list them and log their params.")
+        help_msg = ('Selects the runner implementation from one of the '
+                    'installed and active implementations.  You can run '
+                    '"avocado plugins" and find the list of valid runners '
+                    'under the "Plugins that run test suites on a job '
+                    '(runners) section.  Defaults to "runner", which is '
+                    'the conventional and traditional runner.')
+        settings.register_option(section='run',
+                                 key='test_runner',
+                                 default='runner',
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--test-runner')
 
-        parser.add_argument("--dry-run-no-cleanup", action="store_true",
-                            help="Do not automatically clean up temporary "
-                            "directories used by dry-run", default=False)
+        help_msg = ('Instead of running the test only list them and log '
+                    'their params.')
+        settings.register_option(section='run.dry_run',
+                                 key='enabled',
+                                 default=False,
+                                 key_type=bool,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 short_arg='-d',
+                                 long_arg='--dry-run')
 
-        parser.add_argument('--force-job-id', dest='unique_job_id',
-                            type=str, default=None,
-                            help='Forces the use of a particular job ID. Used '
-                            'internally when interacting with an avocado '
-                            'server. You should not use this option '
-                            'unless you know exactly what you\'re doing')
+        help_msg = ('Do not automatically clean up temporary directories '
+                    'used by dry-run')
+        settings.register_option(section='run.dry_run',
+                                 key='no_cleanup',
+                                 help_msg=help_msg,
+                                 default=False,
+                                 key_type=bool,
+                                 parser=parser,
+                                 long_arg='--dry-run-no-cleanup')
 
-        parser.add_argument('--job-results-dir', action='store',
-                            dest='base_logdir', default=None, metavar='DIRECTORY',
-                            help=('Forces to use of an alternate job '
-                                  'results directory.'))
+        help_msg = ('Forces the use of a particular job ID. Used internally '
+                    'when interacting with an avocado server. You should not '
+                    'use this option unless you know exactly what you\'re '
+                    'doing')
+        settings.register_option(section='run',
+                                 key='unique_job_id',
+                                 default=None,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--force-job-id')
 
-        parser.add_argument('--job-timeout', action='store',
-                            default=None, metavar='SECONDS',
-                            help='Set the maximum amount of time (in SECONDS) '
-                            'that tests are allowed to execute. '
-                            'Values <= zero means "no timeout". '
-                            'You can also use suffixes, like: '
-                            ' s (seconds), m (minutes), h (hours). ')
+        help_msg = 'Forces to use of an alternate job results directory.'
+        settings.register_option(section='run',
+                                 key='results_dir',
+                                 default=None,
+                                 metavar='DIRECTORY',
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--job-results-dir')
 
-        parser.add_argument('--failfast', choices=('on', 'off'),
-                            help='Enable or disable the job interruption on '
-                            'first failed test.')
+        help_msg = ('Categorizes this within a directory with the same name, '
+                    'by creating a link to the job result directory')
+        settings.register_option(section='run',
+                                 key='job_category',
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 default=None,
+                                 metavar='CATEGORY',
+                                 long_arg='--job-category')
 
-        parser.add_argument('--keep-tmp', choices=('on', 'off'),
-                            default='off', help='Keep job temporary files '
-                            '(useful for avocado debugging). Defaults to off.')
+        settings.add_argparser_to_option(namespace='job.run.timeout',
+                                         metavar='SECONDS',
+                                         parser=parser,
+                                         long_arg='--job-timeout')
 
-        parser.add_argument('--ignore-missing-references', choices=('on', 'off'),
-                            help="Force the job execution, even if some of "
-                            "the test references are not resolved to tests.")
+        help_msg = 'Enable the job interruption on first failed test.'
+        settings.register_option(section='run',
+                                 key='failfast',
+                                 default=False,
+                                 key_type=bool,
+                                 action='store_true',
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--failfast')
 
-        sysinfo_default = settings.get_value('sysinfo.collect',
-                                             'enabled',
-                                             key_type='bool',
-                                             default=True)
-        sysinfo_default = 'on' if sysinfo_default is True else 'off'
-        parser.add_argument('--sysinfo', choices=('on', 'off'),
-                            default=sysinfo_default, help="Enable or disable "
-                            "system information (hardware details, profilers, "
-                            "etc.). Current:  %(default)s")
+        help_msg = 'Keep job temporary files (useful for avocado debugging).'
+        settings.register_option(section='run',
+                                 key='keep_tmp',
+                                 default=False,
+                                 key_type=bool,
+                                 action='store_true',
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--keep-tmp')
 
-        parser.add_argument("--execution-order",
-                            choices=("tests-per-variant",
-                                     "variants-per-test"),
-                            help="Defines the order of iterating through test "
-                            "suite and test variants")
+        help_msg = ('Force the job execution, even if some of the test '
+                    'references are not resolved to tests. "on" and '
+                    '"off" will be deprecated soon.')
+        settings.register_option(section='run',
+                                 key='ignore_missing_references',
+                                 default=False,
+                                 key_type=bool,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--ignore-missing-references')
+
+        settings.add_argparser_to_option(namespace='sysinfo.collect.enabled',
+                                         parser=parser,
+                                         action='store_false',
+                                         long_arg='--disable-sysinfo')
+
+        settings.add_argparser_to_option('run.execution_order',
+                                         parser=parser,
+                                         long_arg='--execution-order')
 
         parser.output = parser.add_argument_group('output and result format')
 
-        parser.output.add_argument('-s', '--silent', action="store_true",
-                                   default=argparse.SUPPRESS,
-                                   help='Silence stdout')
+        help_msg = ('Store given logging STREAMs in '
+                    '"$JOB_RESULTS_DIR/$STREAM.$LEVEL."')
+        settings.register_option(section='run',
+                                 key='store_logging_stream',
+                                 nargs='*',
+                                 help_msg=help_msg,
+                                 default=[],
+                                 metavar='STREAM[:LEVEL]',
+                                 key_type=list,
+                                 parser=parser,
+                                 long_arg='--store-logging-stream')
 
-        parser.output.add_argument('--show-job-log', action='store_true',
-                                   default=False, help="Display only the job "
-                                   "log on stdout. Useful for test debugging "
-                                   "purposes. No output will be displayed if "
-                                   "you also specify --silent")
-
-        parser.output.add_argument("--store-logging-stream", nargs="*",
-                                   default=[], metavar="STREAM[:LEVEL]",
-                                   help="Store given logging STREAMs in "
-                                   "$JOB_RESULTS_DIR/$STREAM.$LEVEL.")
-
-        parser.output.add_argument("--log-test-data-directories",
-                                   action="store_true",
-                                   help="Logs the possible data directories "
-                                   "for each test. This is helpful when "
-                                   "writing new tests and not being sure "
-                                   "where to put data files. Look for \""
-                                   "Test data directories\" in your test log")
+        help_msg = ('Logs the possible data directories for each test. This '
+                    'is helpful when writing new tests and not being sure '
+                    'where to put data files. Look for "Test data '
+                    'directories" in your test log')
+        settings.register_option(section='run',
+                                 key='log_test_data_directories',
+                                 default=False,
+                                 key_type=bool,
+                                 help_msg=help_msg,
+                                 parser=parser,
+                                 long_arg='--log-test-data-directories')
 
         out_check = parser.add_argument_group('output check arguments')
 
-        out_check.add_argument('--output-check-record',
-                               choices=('none', 'stdout', 'stderr',
-                                        'both', 'combined', 'all'),
-                               help="Record the output produced by each test "
-                                    "(from stdout and stderr) into both the "
-                                    "current executing result and into  "
-                                    "reference files.  Reference files are "
-                                    "used on subsequent runs to determine if "
-                                    "the test produced the expected output or "
-                                    "not, and the current executing result is "
-                                    "used to check against a previously "
-                                    "recorded reference file.  Valid values: "
-                                    "'none' (to explicitly disable all "
-                                    "recording) 'stdout' (to record standard "
-                                    "output *only*), 'stderr' (to record "
-                                    "standard error *only*), 'both' (to record"
-                                    " standard output and error in separate "
-                                    "files), 'combined' (for standard output "
-                                    "and error in a single file). 'all' is "
-                                    "also a valid but deprecated option that "
-                                    "is a synonym of 'both'.  This option "
-                                    "does not have a default value, but the "
-                                    "Avocado test runner will record the "
-                                    "test under execution in the most suitable"
-                                    " way unless it's explicitly disabled with"
-                                    " value 'none'")
+        help_msg = ('Record the output produced by each test (from stdout '
+                    'and stderr) into both the current executing result '
+                    'and into reference files. Reference files are used on '
+                    'subsequent runs to determine if the test produced the '
+                    'expected output or not, and the current executing result '
+                    'is used to check against a previously recorded reference '
+                    'file.  Valid values: "none" (to explicitly disable all '
+                    'recording) "stdout" (to record standard output *only*), '
+                    '"stderr" (to record standard error *only*), "both" (to '
+                    'record standard output and error in separate files), '
+                    '"combined" (for standard output and error in a single '
+                    'file). "all" is also a valid but deprecated option that '
+                    'is a synonym of "both".')
+        settings.register_option(section='run',
+                                 key='output_check_record',
+                                 help_msg=help_msg,
+                                 choices=('none', 'stdout', 'stderr',
+                                          'both', 'combined', 'all'),
+                                 parser=out_check,
+                                 default=None,
+                                 long_arg='--output-check-record')
 
-        out_check.add_argument('--output-check', choices=('on', 'off'),
-                               default='on',
-                               help="Enable or disable test output (stdout/"
-                               "stderr) check. If this option is off, no "
-                               "output will be checked, even if there are "
-                               "reference files present for the test. "
-                               "Current: on (output check enabled)")
+        help_msg = ('Disables test output (stdout/stderr) check. If this '
+                    'option is given, no output will be checked, even if '
+                    'there are reference files present for the test.')
+        settings.register_option(section='run',
+                                 key='output_check',
+                                 default=True,
+                                 key_type=bool,
+                                 action='store_false',
+                                 help_msg=help_msg,
+                                 parser=out_check,
+                                 long_arg='--disable-output-check')
 
-        loader.add_loader_options(parser)
+        loader.add_loader_options(parser, 'run')
+        parser_common_args.add_tag_filter_args(parser)
 
-        filtering = parser.add_argument_group('filtering parameters')
-        filtering.add_argument('-t', '--filter-by-tags', metavar='TAGS',
-                               action='append',
-                               help='Filter INSTRUMENTED tests based on '
-                               '":avocado: tags=tag1,tag2" notation in '
-                               'their class docstring')
-        filtering.add_argument('--filter-by-tags-include-empty',
-                               action='store_true', default=False,
-                               help=('Include all tests without tags during '
-                                     'filtering. This effectively means they '
-                                     'will be kept in the test suite found '
-                                     'previously to filtering.'))
-        filtering.add_argument('--filter-by-tags-include-empty-key',
-                               action='store_true', default=False,
-                               help=('Include all tests that do not have a '
-                                     'matching key in its key:val tags. This '
-                                     'effectively means those tests will be '
-                                     'kept in the test suite found previously '
-                                     'to filtering.'))
-
-    def run(self, args):
+    def run(self, config):
         """
         Run test modules or simple tests.
 
-        :param args: Command line args received from the run subparser.
+        :param config: Configuration received from command line parser and
+                       possibly other sources.
+        :type config: dict
         """
-        if 'output_check_record' in args:
-            process.OUTPUT_CHECK_RECORD_MODE = getattr(args,
-                                                       'output_check_record',
-                                                       None)
+        if 'run.output_check_record' in config:
+            check_record = config.get('run.output_check_record')
+            process.OUTPUT_CHECK_RECORD_MODE = check_record
 
-        if args.unique_job_id is not None:
+        unique_job_id = config.get('run.unique_job_id')
+        if unique_job_id is not None:
             try:
-                int(args.unique_job_id, 16)
-                if len(args.unique_job_id) != 40:
+                int(unique_job_id, 16)
+                if len(unique_job_id) != 40:
                     raise ValueError
             except ValueError:
                 LOG_UI.error('Unique Job ID needs to be a 40 digit hex number')
                 sys.exit(exit_codes.AVOCADO_FAIL)
+
         try:
-            args.job_timeout = time_to_seconds(args.job_timeout)
-        except ValueError as detail:
-            LOG_UI.error(detail.args[0])
-            sys.exit(exit_codes.AVOCADO_FAIL)
-        with job.Job(args) as job_instance:
+            suite = TestSuite.from_config(config, name='')
+            if suite.size == 0:
+                sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+        except TestSuiteError as err:
+            LOG_UI.error(err)
+            sys.exit(exit_codes.AVOCADO_JOB_FAIL)
+        with job.Job(config, [suite]) as job_instance:
             pre_post_dispatcher = JobPrePostDispatcher()
             try:
                 # Run JobPre plugins
@@ -248,9 +313,4 @@ class Run(CLICmd):
                 # Run JobPost plugins
                 pre_post_dispatcher.map_method('post', job_instance)
 
-            result_dispatcher = ResultDispatcher()
-            if result_dispatcher.extensions:
-                result_dispatcher.map_method('render',
-                                             job_instance.result,
-                                             job_instance)
         return job_run

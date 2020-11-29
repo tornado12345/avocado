@@ -1,17 +1,16 @@
 import multiprocessing
 import os
 import random
-import shutil
 import stat
 import sys
-import tempfile
 import time
 import unittest
 
+from avocado.utils import process
 from avocado.utils.filelock import FileLock
 from avocado.utils.stacktrace import prepare_exc_info
-from avocado.utils import process
 
+from .. import TestCaseTmpDir, skipOnLevelsInferiorThan
 
 # What is commonly known as "0775" or "u=rwx,g=rwx,o=rx"
 DEFAULT_MODE = (stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR |
@@ -24,11 +23,12 @@ import random
 import signal
 import sys
 
-class FakeVMStat(object):
-    def __init__(self, interval):
+class FakeVMStat:
+    def __init__(self, interval, interrupt_delay=0):
         self.interval = interval
         self._sysrand = random.SystemRandom()
         def interrupt_handler(signum, frame):
+            time.sleep(interrupt_delay)
             sys.exit(0)
         signal.signal(signal.SIGINT, interrupt_handler)
         signal.signal(signal.SIGTERM, interrupt_handler)
@@ -111,7 +111,7 @@ class FakeVMStat(object):
             time.sleep(self.interval)
 
 if __name__ == '__main__':
-    vmstat = FakeVMStat(interval=float(sys.argv[1]))
+    vmstat = FakeVMStat(interval=float(sys.argv[1]), interrupt_delay=float(sys.argv[2]))
     vmstat.start()
 """.format(python=sys.executable)
 
@@ -122,38 +122,63 @@ if __name__ == '__main__':
 """.format(python=sys.executable)
 
 
-class ProcessTest(unittest.TestCase):
+class ProcessTest(TestCaseTmpDir):
 
     def setUp(self):
-        self.base_logdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-        self.fake_vmstat = os.path.join(self.base_logdir, 'vmstat')
+        super(ProcessTest, self).setUp()
+        self.fake_vmstat = os.path.join(self.tmpdir.name, 'vmstat')
         with open(self.fake_vmstat, 'w') as fake_vmstat_obj:
             fake_vmstat_obj.write(FAKE_VMSTAT_CONTENTS)
         os.chmod(self.fake_vmstat, DEFAULT_MODE)
 
-        self.fake_uptime = os.path.join(self.base_logdir, 'uptime')
+        self.fake_uptime = os.path.join(self.tmpdir.name, 'uptime')
         with open(self.fake_uptime, 'w') as fake_uptime_obj:
             fake_uptime_obj.write(FAKE_UPTIME_CONTENTS)
         os.chmod(self.fake_uptime, DEFAULT_MODE)
 
+    @skipOnLevelsInferiorThan(2)
     def test_process_start(self):
-        proc = process.SubProcess('%s 1' % self.fake_vmstat)
+        """
+        :avocado: tags=parallel:1
+        """
+        proc = process.SubProcess('%s 1 0' % self.fake_vmstat)
         proc.start()
         time.sleep(3)
         proc.terminate()
         proc.wait(timeout=1)
         stdout = proc.get_stdout().decode()
         self.assertIn('memory', stdout, 'result: %s' % stdout)
-        self.assertRegexpMatches(stdout, '[0-9]+')
+        self.assertRegex(stdout, '[0-9]+')
+
+    @skipOnLevelsInferiorThan(2)
+    def test_process_stop_interrupted(self):
+        """
+        :avocado: tags=parallel:1
+        """
+        proc = process.SubProcess('%s 1 3' % self.fake_vmstat)
+        proc.start()
+        time.sleep(3)
+        proc.stop(2)
+        result = proc.result
+        self.assertIn('timeout after', result.interrupted, "Process wasn't interrupted")
+
+    @skipOnLevelsInferiorThan(2)
+    def test_process_stop_uninterrupted(self):
+        """
+        :avocado: tags=parallel:1
+        """
+        proc = process.SubProcess('%s 1 3' % self.fake_vmstat)
+        proc.start()
+        time.sleep(3)
+        proc.stop(4)
+        result = proc.result
+        self.assertFalse(result.interrupted, "Process was interrupted to early")
 
     def test_process_run(self):
         proc = process.SubProcess(self.fake_uptime)
         result = proc.run()
         self.assertEqual(result.exit_status, 0, 'result: %s' % result)
         self.assertIn(b'load average', result.stdout)
-
-    def tearDown(self):
-        shutil.rmtree(self.base_logdir)
 
 
 def file_lock_action(args):
@@ -164,33 +189,28 @@ def file_lock_action(args):
         time.sleep(sleeptime)
 
 
-class FileLockTest(unittest.TestCase):
+class FileLockTest(TestCaseTmpDir):
 
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix='avocado_' + __name__)
-
-    @unittest.skipIf(int(os.environ.get("AVOCADO_CHECK_LEVEL", 0)) < 2,
-                     "Skipping test that take a long time to run, are "
-                     "resource intensive or time sensitve")
+    @skipOnLevelsInferiorThan(3)
     def test_filelock(self):
+        """
+        :avocado: tags=parallel:1
+        """
         # Calculate the timeout based on t_100_iter + 2e-5*players
         start = time.time()
         for _ in range(100):
-            with FileLock(self.tmpdir):
+            with FileLock(self.tmpdir.name):
                 pass
         timeout = 0.02 + (time.time() - start)
         players = 1000
         pool = multiprocessing.Pool(players)
-        args = [(self.tmpdir, players, timeout)] * players
+        args = [(self.tmpdir.name, players, timeout)] * players
         try:
             pool.map(file_lock_action, args)
         except Exception:
             msg = 'Failed to run FileLock with %s players:\n%s'
             msg %= (players, prepare_exc_info(sys.exc_info()))
             self.fail(msg)
-
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir)
 
 
 if __name__ == '__main__':

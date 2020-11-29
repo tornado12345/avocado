@@ -18,72 +18,17 @@ Avocado generic IO related functions.
 
 import logging
 import os
-import time
 import re
 
-from six.moves import input
-
-from . import path as utils_path
+from . import crypto
 
 log = logging.getLogger('avocado.test')
-
-
-_open_log_files = {}
-_log_file_dir = os.environ.get('TMPDIR', '/tmp')
 
 
 class GenIOError(Exception):
     """
     Base Exception Class for all IO exceptions
     """
-
-
-def log_line(filename, line):
-    """
-    Write a line to a file.
-
-    :param filename: Path of file to write to, either absolute or relative to
-                     the dir set by set_log_file_dir().
-    :param line: Line to write.
-    """
-    global _open_log_files, _log_file_dir  # pylint: disable=W0603
-
-    path = utils_path.get_path(_log_file_dir, filename)
-    if path not in _open_log_files:
-        # First, let's close the log files opened in old directories
-        close_log_file(filename)
-        # Then, let's open the new file
-        try:
-            utils_path.init_dir(os.path.dirname(path))
-        except OSError:
-            pass
-        _open_log_files[path] = open(path, "w")
-    timestr = time.strftime("%Y-%m-%d %H:%M:%S")
-    _open_log_files[path].write("%s: %s\n" % (timestr, line))
-    _open_log_files[path].flush()
-
-
-def set_log_file_dir(directory):
-    """
-    Set the base directory for log files created by log_line().
-
-    :param dir: Directory for log files.
-    """
-    global _log_file_dir  # pylint: disable=W0603
-    _log_file_dir = directory
-
-
-def close_log_file(filename):
-    global _open_log_files, _log_file_dir  # pylint: disable=W0603
-    remove = []
-    for k in _open_log_files:
-        if os.path.basename(k) == filename:
-            f = _open_log_files[k]
-            f.close()
-            remove.append(k)
-    if remove:
-        for key_to_remove in remove:
-            _open_log_files.pop(key_to_remove)
 
 
 def ask(question, auto=False):
@@ -155,7 +100,7 @@ def read_all_lines(filename):
     try:
         with open(filename, 'r') as file_obj:
             contents = [line.rstrip('\n') for line in file_obj.readlines()]
-    except Exception:
+    except Exception:  # pylint: disable=W0703
         pass
     return contents
 
@@ -195,12 +140,37 @@ def write_file_or_fail(filename, data):
     :type data: str
     :raises GenIOError: On write Failure
     """
-    fd = os.open(filename, os.O_WRONLY)
     try:
-        os.write(fd, data)
+        with open(filename, 'w') as file_obj:
+            file_obj.write(data)
     except OSError as details:
         raise GenIOError("The write to %s failed: %s" % (
                          filename, details))
+
+
+def append_file(filename, data):
+    """
+    Append data to a file.
+
+    :param filename: Path to the file.
+    :type filename: str
+    :param line: Line to be written.
+    :type line: str
+    """
+    with open(filename, 'a+') as file_obj:
+        file_obj.write(data)
+
+
+def append_one_line(filename, line):
+    """
+    Append one line of text to filename.
+
+    :param filename: Path to the file.
+    :type filename: str
+    :param line: Line to be written.
+    :type line: str
+    """
+    append_file(filename, line.rstrip('\n') + '\n')
 
 
 def is_pattern_in_file(filename,  pattern):
@@ -223,3 +193,18 @@ def is_pattern_in_file(filename,  pattern):
         if re.search(pattern, content_file.read(), re.MULTILINE):
             return True
     return False
+
+
+def are_files_equal(filename, other):
+    """
+    Comparison of two files line by line
+    :param filename: path to the first file
+    :type filename: str
+    :param other: path to the second file
+    :type other: str
+    :return: equality of file
+    :rtype: boolean
+    """
+    hash_1 = crypto.hash_file(filename)
+    hash_2 = crypto.hash_file(other)
+    return hash_1 == hash_2

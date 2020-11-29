@@ -1,17 +1,12 @@
+import http.client
 import os
-import shutil
 import tempfile
 import threading
 import unittest.mock
-import http.client
 
-from avocado.utils import cloudinit
-from avocado.utils import iso9660
-from avocado.utils import network
-from avocado.utils import data_factory
+from avocado.utils import cloudinit, data_factory, iso9660
 
-from .. import setup_avocado_loggers
-
+from .. import setup_avocado_loggers, temp_dir_prefix
 
 setup_avocado_loggers()
 
@@ -30,12 +25,13 @@ class CloudInit(unittest.TestCase):
 class CloudInitISO(unittest.TestCase):
 
     def setUp(self):
-        self.tmpdir = tempfile.mkdtemp(prefix="avocado_" + __name__)
+        prefix = temp_dir_prefix(__name__, self, 'setUp')
+        self.tmpdir = tempfile.TemporaryDirectory(prefix=prefix)
 
     @unittest.skipUnless(has_iso_create_write(),
                          "system lacks support for creating ISO images")
     def test_iso_no_phone_home(self):
-        path = os.path.join(self.tmpdir, "cloudinit.iso")
+        path = os.path.join(self.tmpdir.name, "cloudinit.iso")
         instance_id = b"INSTANCE_ID"
         username = b"AVOCADO_USER"
         password = b"AVOCADO_PASSWORD"
@@ -47,7 +43,7 @@ class CloudInitISO(unittest.TestCase):
         self.assertIn(password, user_data)
 
     def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+        self.tmpdir.cleanup()
 
 
 class PhoneHome(unittest.TestCase):
@@ -55,7 +51,8 @@ class PhoneHome(unittest.TestCase):
     ADDRESS = '127.0.0.1'
 
     def post_ignore_response(self, url):
-        conn = http.client.HTTPConnection(self.ADDRESS, self.port)
+        port = self.server.socket.getsockname()[1]
+        conn = http.client.HTTPConnection(self.ADDRESS, port)
         conn.request('POST', url)
         try:
             conn.getresponse()
@@ -65,9 +62,8 @@ class PhoneHome(unittest.TestCase):
             conn.close()
 
     def setUp(self):
-        self.port = network.find_free_port(address=self.ADDRESS)
         self.instance_id = data_factory.generate_random_string(12)
-        self.server = cloudinit.PhoneHomeServer((self.ADDRESS, self.port),
+        self.server = cloudinit.PhoneHomeServer((self.ADDRESS, 0),
                                                 self.instance_id)
 
     def test_phone_home_bad(self):

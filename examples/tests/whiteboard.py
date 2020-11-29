@@ -3,7 +3,6 @@
 import base64
 
 from avocado import Test
-from avocado import main
 
 
 class WhiteBoard(Test):
@@ -16,8 +15,4 @@ class WhiteBoard(Test):
         """
         This should write a message to the whiteboard.
         """
-        self.whiteboard = base64.encodestring(b'My message encoded in base64').decode('ascii')
-
-
-if __name__ == "__main__":
-    main()
+        self.whiteboard = base64.encodebytes(b'My message encoded in base64').decode('ascii')
